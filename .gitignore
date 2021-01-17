@@ -192,3 +192,4 @@ dkms.conf
 
 .ccls-cache/*
 cs320/.ccls-cache/*
+.nvimlog
