@@ -1,11 +1,12 @@
 ---
 title: My Notes
-subtitle: >
-  These represent most things that I have
-  learned from different places.
+subtitle: Notes about different things.
 ---
+
+## School
+- [Computer Architecture](school/cs370/cs370)
 
 ## Security
 
-- [Intel x86](security/x86)
+- [Introduction to Intel x86](security/intro-x86/intro-x86)
 - [Wireshark](security/wireshark)
