@@ -4,6 +4,7 @@ subtitle: Notes about different things.
 ---
 
 ## School
+
 - [Computer Architecture](school/cs370/cs370)
 
 ## Security
