@@ -10,4 +10,5 @@ subtitle: Notes about different things.
 ## Security
 
 - [Introduction to Intel x86](security/intro-x86/intro-x86)
+* [Windows CMD List](security/windows_cmd.md)
 - [Wireshark](security/wireshark)
