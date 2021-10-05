@@ -1,3 +1,0 @@
-/bin/rm -f your.outputO
-/bin/uname > your.outputO -a 
-echo this overwriting should be REFUSED > your.outputO

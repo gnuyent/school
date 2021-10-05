@@ -1,3 +1,0 @@
-ls-F /etc/at.allow
-ls-F /etc/shadow /etc/pm
-ls-F /etc/cron.daily/
