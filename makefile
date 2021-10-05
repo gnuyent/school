@@ -1,7 +1,7 @@
 # A Makefile for Program 1, CS480
 
 PROGRAM = p2
-CC = gcc
+CC = gcc-11
 CFLAGS = -g
 
 # invoking 'make clean' would try to create the 'clean' target, which doesn't
