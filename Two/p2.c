@@ -19,18 +19,6 @@
  */
 
 #include "p2.h"
-#include "getword.h"
-#include <dirent.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 /*
  * Shell bitfield flags.
@@ -552,11 +540,5 @@ void parse() {
 
     /* add 1 to include the null character */
     buffer_idx += word_width + 1;
-
-    /*
-     * After the first loop, reset firstRun so everything else is handled as
-     * arguments.
-     */
-    /* state.is_first_run = 0; */
   }
 }
