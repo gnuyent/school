@@ -277,18 +277,9 @@ int main(void) {
                                      : open(redir_in_target, O_RDONLY);
       if (fd < 0) {
         fprintf(stderr, "%s: No such file or directory.\n", redir_in_target);
-        if (close(fd) < 0) {
-          perror("Error closing input file.");
-	  exit(EXIT_FAILURE);
-        };
         continue;
       } else if (dup2(fd, STDIN_FILENO) < 0 || close(fd) < 0) {
         fprintf(stderr, "%s: Error redirecting input.\n", redir_in_target);
-        exit(EXIT_FAILURE);
-      }
-
-      if (close(fd) < 0) {
-        perror("Error closing input file.");
         exit(EXIT_FAILURE);
       }
 
@@ -305,10 +296,6 @@ int main(void) {
           continue;
         } else if (dup2(fd, STDOUT_FILENO) < 0 || close(fd) < 0) {
           fprintf(stderr, "%s: Error redirecting output.\n", redir_out_target);
-          exit(EXIT_FAILURE);
-        }
-        if (close(fd) < 0) {
-          perror("Error closing output file.");
           exit(EXIT_FAILURE);
         }
       }
