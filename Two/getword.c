@@ -21,7 +21,8 @@ typedef enum lexstate {
   escape_next_char,   // Anything prefixed by '\'
   meta_gt,            // Handler for >!
   pushback_char,      // Signal to push character back to stdin
-  end_lex             // Housekeeping tasks
+  end_lex,            // Housekeeping tasks
+  missing_end_quote,  // End quote is missing
 } lexstate;
 
 /*
@@ -35,7 +36,8 @@ typedef enum lexstate {
 
   INPUT: a pointer to the beginning of a character array
 
-  OUTPUT: -1 or the number of characters in the word
+  OUTPUT: -2 if there is an unmatched quote, -1 on EOF, or the number of
+  characters in the word
 
   SIDE EFFECTS: bytes beginning at *w will be overwritten. Anyone using this
   routine should have w pointing to an area with at least STORAGE available
@@ -165,7 +167,7 @@ int getword(char *w) {
         }
         // Encountered unexpected EOF or newline
         else if (focus == EOF || focus == '\n') {
-          state = term_char;
+          state = missing_end_quote;
           break;
         }
         w[size] = focus;
@@ -214,6 +216,8 @@ int getword(char *w) {
     case end_lex:
       w[size] = '\0';
       return size;
+    case missing_end_quote:
+      return -2;
     }
   }
 

@@ -1,3 +1,8 @@
 I wrote this code myself. I believe everything works perfectly under all conditions and has no bugs.
 
-* `lsF.c` - A code snippet was adapted from this StackOverflow answer: https://stackoverflow.com/a/3828537.
+* `lsF()` - A code snippet was adapted from this StackOverflow answer: https://stackoverflow.com/a/3828537.
+* `cd()/lsF()` - On redirection of these commands, a syntax error is printed and the command is not executed.
+* redirections - Whenever the user tries to redirect to/from '&', we print a syntax error and reissue the prompt.
+	* Ex: `echo >&` will print `Invalid redirection target.`.
+* nargv - This array is never "reset" between runs, it is read until the value in nargc is hit.
+* MAXITEM - The shell does not check if we have `nargc > MAXITEM` arguments. We can cause memory issues if we supply more than MAXITEM arguments.

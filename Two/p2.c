@@ -5,20 +5,12 @@
  *   Instructor : Dr. John Carroll
  *   Session    : Fall 2021
  *   School     : San Diego State University
- *
- * Our shell begins inside the `main()` function which coordinates what and how
- * things should be called according to the flags set inside the `state`
- * bitfield. Processing input begins in the `parse()` function. Generally, we
- * store input from `stdin` inside `buffer` (char array) where each "word" is
- * null-terminated. We use pointers inside `nargv` to represent the beginning of
- * each argument inside `buffer`. `nargv` is then read by whatever command (e.g.
- * cd or ls-F) up to the number specified in `nargc`. ALL characters (including
- * pipes and redirection symbols) are stored inside `buffer`, it is the
- * responsibility of `parse()` to not include pointers to these characters
- * inside `nargv`.
  */
 
 #include "p2.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 /*
  * Shell bitfield flags.
@@ -34,10 +26,12 @@ struct {
   /*
    * Syntax errors
    */
-  unsigned int syntax_max_item : 1;     /* overflowed maximum item count */
-  unsigned int syntax_pipe : 1;         /* more than one pipe exists */
-  unsigned int syntax_in_redirect : 1;  /* ambiguous input redirects */
-  unsigned int syntax_out_redirect : 1; /* ambiguous output redirects */
+  unsigned int syntax_max_item : 1;      /* overflowed maximum item count */
+  unsigned int syntax_pipe : 1;          /* more than one pipe exists */
+  unsigned int syntax_in_redirect : 1;   /* ambiguous input redirects */
+  unsigned int syntax_out_redirect : 1;  /* ambiguous output redirects */
+  unsigned int syntax_missing_quote : 1; /* missing matching quotes */
+  unsigned int syntax_invalid_redir_target : 1; /* bad redirect target (&) */
 
   /*
    * Program execution flags. In each shell prompt, this can be at most ONE 1
@@ -99,124 +93,23 @@ char *redir_out_target = NULL;
 /* Input file for redirection (<). Only read when state.redir_in is 1. */
 char *redir_in_target = NULL;
 
+/*
+ * Pipe argument values - p(ipe)argv
+ * Similar to nargv, pargv contains the argument values for the piped (RHS)
+ * command. See nargv for implementation and usage details.
+ */
 char *pargv[MAXITEM];
+
+/*
+ * Pipe argument count - p(ipe)argc
+ * Similar to nargc, pargc contains the argument count for the piped (RHS)
+ * command. See nargc for implementation and usage details.
+ */
 int pargc = 0;
-
-/*
- * Pipe handler.
- */
-void spipe() {
-  int fildes[2];
-  pid_t first, second;
-  int status;
-
-  pipe(fildes);
-
-  first = fork();
-  if (first == 0) {
-    dup2(fildes[1], STDOUT_FILENO);
-    close(fildes[0]);
-    close(fildes[1]);
-    execvp(nargv[0], nargv);
-  }
-
-  second = fork();
-  if (second == 0) {
-    dup2(fildes[0], STDIN_FILENO);
-    close(fildes[0]);
-    close(fildes[1]);
-    execvp(pargv[0], pargv);
-  }
-
-  close(fildes[0]);
-  close(fildes[1]);
-
-  for (;;) {
-    pid_t pid;
-    pid = wait(NULL);
-    if (pid == second) {
-      break;
-    }
-  }
-}
-
-/*
- * Redirection handler for [in|out]put.
- *
- * INPUT: Pointer to the beginning of a character array for the INPUT file and
- * OUTPUT file. These pointers can be NULL, meaning that the respective
- * redirection will be skipped.
- *
- * OUTPUT: On successful completion, an integer 0 is returned. Otherwise, -1 is
- * returned.
- */
-int redirect(char *input, char *output) {
-  /* handle stdin redirects */
-  if (input != NULL) {
-    int roflags = O_RDONLY;
-    int redir_in_target_fd = open(input, roflags);
-    if (redir_in_target_fd < 0) {
-      fprintf(stderr, "%s: No such file or directory.\n", output);
-      return -1;
-    } else if (dup2(redir_in_target_fd, STDIN_FILENO) < 0) {
-      fprintf(stderr, "%s: Error redirecting input\n", input);
-      return -1;
-    }
-    close(redir_in_target_fd);
-  }
-
-  /* handle stdout redirects */
-  if (output != NULL) {
-    int wrflags = O_WRONLY | O_CREAT | O_EXCL;
-    /* 0644 = -rw-r--r-- */
-    int perms = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
-    int redir_out_target_fd = open(output, wrflags, perms);
-    if (redir_out_target_fd == -1) {
-      fprintf(stderr, "%s: File exists.\n", output);
-      state.redir_out = 0;
-      return -1;
-    } else {
-      if (dup2(redir_out_target_fd, STDOUT_FILENO) < 0) {
-        fprintf(stderr, "%s: Error redirecting output.\n", output);
-        return -1;
-      }
-    }
-    close(redir_out_target_fd);
-  }
-  return 0;
-}
-
-/*
- * `restore_std()` restores the original file descriptor for std[in|out] based
- * on the current state. It is called if std[in|out] was overwritten (e.g. by
- * `redirect()`). On BSD, close(2) is redundant.
- *
- *  INPUT: File descriptors for the original stdin and stdout.
- */
-void restore_std(int original_stdin, int original_stdout) {
-  if (state.redir_in || state.pipe) {
-    if (dup2(original_stdin, STDIN_FILENO) == -1) {
-      perror("Unable to close redirected input stream. Exiting.\n");
-      exit(EXIT_FAILURE);
-    }
-    close(original_stdin);
-  }
-
-  if (state.redir_out || state.pipe) {
-    if (dup2(original_stdout, STDOUT_FILENO) == -1) {
-      perror("Unable to close redirected output stream. Exiting.\n");
-      exit(EXIT_FAILURE);
-    }
-    close(original_stdout);
-  }
-}
 
 /*
   Shell built-in handler for `cd`. Allows the user to change directories
   specified in `nargv`. `cd` only accepts 1 argument.
-
-  INPUT: A pointer to the beginning of a character array with the search
-  location
 
   OUTPUT: On successful completion, an integer 0 is returned. Otherwise, -1 is
   returned.
@@ -224,7 +117,7 @@ void restore_std(int original_stdin, int original_stdout) {
 int cd() {
   int cd_status;
   if (nargc > 2) {
-    perror("cd: Too many arguments\n");
+    fprintf(stderr, "cd: Too many arguments.\n");
     return -1;
   }
 
@@ -278,7 +171,7 @@ int lsF() {
 
   // If filename cannot be accessed or cannot malloc(3) enough memory.
   if (dirp == NULL) {
-    fprintf(stderr, "%s unreadable\n", nargv[1]);
+    fprintf(stderr, "%s unreadable.\n", nargv[1]);
     return -1;
   }
 
@@ -296,46 +189,6 @@ int lsF() {
 }
 
 /*
- * Executable handler for non-built-in commands. Forks a new process which runs
- * the command inside nargv[0]. nargv[1..] represents the arguments passed to
- * the executable.
- */
-void cmd() {
-  pid_t kidpid;
-  int devnull;
-
-  /* null terminate end of arguments */
-  nargv[nargc] = NULL;
-  devnull = open("/dev/null", O_WRONLY);
-  kidpid = fork();
-  if (kidpid == -1) {
-    /* parent */
-    perror("cannot fork\n");
-    exit(EXIT_FAILURE);
-  } else if (kidpid == 0) {
-    /* child */
-    /* retrieve input from /dev/null */
-    dup2(devnull, STDIN_FILENO);
-    if (execvp(nargv[0], nargv) == -1) {
-      /* flush stdout/stderr to prevent children from printing prompt */
-      fflush(stdout);
-      fflush(stderr);
-      fprintf(stderr, "%s: Command not found.\n", nargv[0]);
-      exit(9);
-    }
-    exit(EXIT_SUCCESS);
-  }
-  /* parent */
-  /* wait for children to go to bed permanently */
-  while (wait(NULL) != -1)
-    ;
-  if (close(devnull) == -1) {
-    perror("Unable to close /dev/null stdin override. Exiting.\n");
-    exit(EXIT_FAILURE);
-  }
-}
-
-/*
  * Signal Handler - terminates shell on EOF (<C-d>).
  */
 void catch_term(int signum) { state.complete = 1; }
@@ -345,7 +198,6 @@ void catch_term(int signum) { state.complete = 1; }
  * inside `state`.
  */
 int main(void) {
-
   /* Establish signal handler for SIGTERM. */
   (void)signal(SIGTERM, catch_term);
 
@@ -356,6 +208,7 @@ int main(void) {
   }
 
   while (!state.complete) {
+    /* Save copies of stdin/stdout to restore later on */
     int original_stdin = dup(STDIN_FILENO);
     int original_stdout = dup(STDOUT_FILENO);
 
@@ -373,55 +226,187 @@ int main(void) {
 
     parse();
 
-    /* if (state.syntax_max_item) { */
-    /*   fprintf(stderr, "Too many inputs, truncating command to first %d
-     * words.", */
-    /*           MAXITEM); */
-    /* } */
-
+    /* early termination/syntax error cases */
     if (state.syntax_pipe) {
-      perror("Too many pipes.\n");
+      fprintf(stderr, "Too many pipes.\n");
       continue;
     } else if (state.syntax_in_redirect) {
-      perror("Ambiguous input redirects.\n");
+      fprintf(stderr, "Ambiguous input redirection.\n");
       continue;
     } else if (state.syntax_out_redirect) {
-      perror("Ambiguous output redirects.\n");
+      fprintf(stderr, "Ambiguous output redirection.\n");
+      continue;
+    } else if (state.syntax_missing_quote) {
+      fprintf(stderr, "Missing end quote.\n");
+      continue;
+    } else if (state.syntax_invalid_redir_target) {
+      fprintf(stderr, "Invalid redirection target.\n");
+      continue;
+    } else if (state.redir_in && redir_in_target == NULL) {
+      fprintf(stderr, "Invalid input redirection target.\n");
+      continue;
+    } else if (state.redir_out && redir_out_target == NULL) {
+      fprintf(stderr, "Invalid output redirection target.\n");
+      continue;
+    } else if (state.redir_in && state.call_cmd == 0) {
+      fprintf(stderr, "Invalid command supplied for input redirection.\n");
+      continue;
+    } else if (state.redir_out && state.call_cmd == 0) {
+      fprintf(stderr, "Invalid command supplied for output redirection.\n");
+      continue;
+    } else if (state.pipe && pargc == 0) {
+      fprintf(stderr, "No command for piping specified.\n");
+      continue;
+    } else if (state.is_empty_newline) {
       continue;
     }
 
-    /* handle terminating conditions */
-    if (state.is_empty_newline) {
-      continue;
-    }
-
-    if (state.bg) {
-      /* create some kind of child */
-      printf("NOT IMPLEMENTED: backgrounding\n");
-      printf("%s [1]\n", nargv[0]);
-    }
-
-    if (state.redir_in || state.redir_out) {
-      if (redirect(redir_in_target, redir_out_target) == -1) {
-        restore_std(original_stdin, original_stdout);
-        continue;
-      }
-    }
-
-    if (state.pipe) {
-      spipe();
-    }
     /* built-ins or fork */
-    else if (state.call_cd) {
+    if (state.call_cd) {
       cd();
     } else if (state.call_lsf) {
       lsF();
+      /* do some kind of forking */
     } else if (state.call_cmd) {
-      cmd();
-    }
+      pid_t childpid, grandchildpid;
+      /* file descriptors for input/output redirection */
+      int fd;
 
-    if (state.redir_in || state.redir_out || state.pipe) {
-      restore_std(original_stdin, original_stdout);
+      /* input redirection */
+      fd = (redir_in_target == NULL) ? open("/dev/null", O_RDONLY)
+                                     : open(redir_in_target, O_RDONLY);
+      if (fd < 0) {
+        fprintf(stderr, "%s: No such file or directory.\n", redir_in_target);
+        close(fd);
+        continue;
+      } else if (dup2(fd, STDIN_FILENO) < 0) {
+        fprintf(stderr, "%s: Error redirecting input\n", redir_in_target);
+        close(fd);
+        continue;
+      }
+
+      if (close(fd) < 0) {
+        perror("Error closing input file. Exiting.");
+        exit(EXIT_FAILURE);
+      }
+
+      /* output redirection */
+      if (redir_out_target != NULL) {
+        /* fail if file already exists */
+        int wrflags = O_WRONLY | O_CREAT | O_EXCL;
+        /* 0644 = -rw-r--r-- */
+        int perms = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+        fd = open(redir_out_target, wrflags, perms);
+        if (fd < 0) {
+          fprintf(stderr, "%s: File exists.\n", redir_out_target);
+          close(fd);
+          continue;
+        } else if (dup2(fd, STDOUT_FILENO) < 0) {
+          fprintf(stderr, "%s: Error redirecting output.\n", redir_out_target);
+          close(fd);
+          continue;
+        }
+        if (close(fd) < 0) {
+          perror("Error closing input file. Exiting.");
+          exit(EXIT_FAILURE);
+        }
+      }
+
+      /* null terminate end of arguments */
+      nargv[nargc] = NULL;
+
+      /* begin forking children */
+      if (state.pipe) {
+        /* piping */
+        grandchildpid = fork(); /* RHS of pipe */
+        if (grandchildpid == -1) {
+          /* parent */
+          fprintf(stderr, "%s: Cannot fork read pipe end.\n", pargv[0]);
+          exit(EXIT_FAILURE);
+        } else if (grandchildpid == 0) {
+          /* grandchild */
+          int fildes[2];
+          pipe(fildes);
+
+          childpid = fork();
+          if (childpid == -1) {
+            /* grandchild */
+            fprintf(stderr, "%s: Cannot fork write pipe end.\n", nargv[0]);
+            exit(EXIT_FAILURE);
+          } else if (childpid == 0) {
+            /* child */
+            if (dup2(fildes[1], STDOUT_FILENO) < 0 || close(fildes[0]) < 0 ||
+                close(fildes[1]) < 0) {
+              perror("Error piping.\n");
+              exit(EXIT_FAILURE);
+            }
+            if (execvp(nargv[0], nargv) == -1) {
+              fprintf(stderr, "%s: Command not found.\n", nargv[0]);
+              exit(EXIT_FAILURE);
+            }
+            exit(EXIT_SUCCESS);
+          }
+
+          if (dup2(fildes[0], STDIN_FILENO) < 0 || close(fildes[0]) < 0 ||
+              close(fildes[1]) < 0) {
+            perror("Error piping.\n");
+            exit(EXIT_FAILURE);
+          }
+
+          if (execvp(pargv[0], pargv) == -1) {
+            fprintf(stderr, "%s: Command not found.\n", pargv[0]);
+            exit(EXIT_FAILURE);
+          }
+
+          if (close(fildes[0]) < 0 || close(fildes[1]) < 0) {
+            perror("Error piping.\n");
+            exit(EXIT_FAILURE);
+          };
+          exit(EXIT_SUCCESS);
+        }
+      } else {
+        /* no piping */
+        childpid = fork();
+
+        if (childpid == -1) {
+          /* parent */
+          fprintf(stderr, "%s: Cannot fork child.\n", nargv[0]);
+          exit(EXIT_FAILURE);
+        } else if (childpid == 0) {
+          /* child */
+          if (execvp(nargv[0], nargv) == -1) {
+            fprintf(stderr, "%s: Command not found.\n", nargv[0]);
+            exit(EXIT_FAILURE);
+          }
+          exit(EXIT_SUCCESS);
+        }
+      }
+      /* parent */
+      /* restore original stdin/stdout since they are generally overwritten */
+      if (dup2(original_stdin, STDIN_FILENO) < 0 || close(original_stdin) < 0) {
+        perror("Unable to recover stdin.\n");
+        exit(EXIT_FAILURE);
+      }
+
+      if (dup2(original_stdout, STDOUT_FILENO) < 0 ||
+          close(original_stdout) < 0) {
+        perror("Unable to recover stdout.\n");
+        exit(EXIT_FAILURE);
+      }
+
+      if (state.bg) {
+        printf("%s [%d]\n", nargv[0], childpid);
+      } else if (state.pipe) {
+        /* waiting for RHS of pipe */
+        while (wait(NULL) != grandchildpid) {
+          printf("%d\n", grandchildpid);
+          /* no-op */
+        }
+      } else {
+        while (wait(NULL) != childpid) {
+          /* no-op */
+        }
+      }
     }
   }
 
@@ -451,26 +436,77 @@ void parse() {
   /* determine whether to save the current buffer input */
   int save_current;
 
+  int firstrun = 1;
+
   for (;;) {
-    /* if (nargc > MAXITEM) { */
-    /*   state.syntax_max_item = 1; */
-    /*   break; */
-    /* } */
     save_current = 1;
     word_width = getword(&buffer[buffer_idx]);
     current_buffer = &buffer[buffer_idx];
 
-    if (word_width == -1) {
+    if (word_width == -2) {
+      state.syntax_missing_quote = 1;
+      break;
+    } else if (word_width == -1) {
       state.complete = 1;
       break;
       /* term chars encountered: \n or ;*/
     } else if (word_width == 0) {
-      if (buffer_idx == 0) {
+      if (firstrun) {
         state.is_empty_newline = 1;
       }
       break;
     } else if (word_width > 0) {
-      if (buffer_idx == 0) {
+      if (state.redir_in && redir_in_target == NULL) {
+        if (strcmp(current_buffer, "&") == 0) {
+          state.syntax_invalid_redir_target = 1;
+        } else {
+          redir_in_target = current_buffer;
+          save_current = 0;
+        }
+      } else if (state.redir_out && redir_out_target == NULL) {
+        if (strcmp(current_buffer, "&") == 0) {
+          state.syntax_invalid_redir_target = 1;
+        } else {
+          redir_out_target = current_buffer;
+          save_current = 0;
+        }
+      }
+      /*
+       * We don't want to copy any arguments if we have a signal to background
+       * or redirect our output since we need to have special behavior.
+       * Therefore, we just continue parsing while setting the proper flag.
+       *
+       * If we encounter multiple redirects or pipes, we want to continue
+       * parsing to "gobble" up the remaining characters.
+       */
+      else if (strcmp(current_buffer, "&") == 0) {
+        state.bg = 1;
+        break;
+      } else if (strcmp(current_buffer, ">") == 0) {
+        /* don't handle multiple output redirects, return a syntax error */
+        if (state.redir_out) {
+          state.syntax_out_redirect = 1;
+        } else {
+          state.redir_out = 1;
+        }
+        save_current = 0;
+      } else if (strcmp(current_buffer, "<") == 0) {
+        /* don't handle multiple input redirects, return a syntax error */
+        if (state.redir_in) {
+          state.syntax_in_redirect = 1;
+        } else {
+          state.redir_in = 1;
+        }
+        save_current = 0;
+      } else if (strcmp(current_buffer, "|") == 0) {
+        /* don't handle multiple pipes, return a syntax error */
+        if (state.pipe) {
+          state.syntax_pipe = 1;
+        } else {
+          state.pipe = 1;
+        }
+        save_current = 0;
+      } else if (firstrun) {
         if (strcmp(current_buffer, "cd") == 0) {
           state.call_cd = 1;
         } else if (strcmp(current_buffer, "ls-F") == 0) {
@@ -478,54 +514,8 @@ void parse() {
         } else {
           state.call_cmd = 1;
         }
+        firstrun = 0;
       }
-    }
-
-    if (state.redir_in && redir_in_target == NULL) {
-      redir_in_target = current_buffer;
-      save_current = 0;
-    }
-
-    if (state.redir_out && redir_out_target == NULL) {
-      redir_out_target = current_buffer;
-      save_current = 0;
-    }
-
-    /*
-     * We don't want to copy any arguments if we have a signal to background
-     * or redirect our output since we need to have special behavior.
-     * Therefore, we just continue parsing while setting the proper flag.
-     *
-     * If we encounter multiple redirects or pipes, we want to continue parsing
-     * to "gobble" up the remaining characters.
-     */
-    if (strcmp(current_buffer, "&") == 0) {
-      state.bg = 1;
-      break;
-    } else if (strcmp(current_buffer, ">") == 0) {
-      /* don't handle multiple output redirects, return a syntax error */
-      if (state.redir_out) {
-        state.syntax_out_redirect = 1;
-      } else {
-        state.redir_out = 1;
-      }
-      save_current = 0;
-    } else if (strcmp(current_buffer, "<") == 0) {
-      /* don't handle multiple input redirects, return a syntax error */
-      if (state.redir_in) {
-        state.syntax_in_redirect = 1;
-      } else {
-        state.redir_in = 1;
-      }
-      save_current = 0;
-    } else if (strcmp(current_buffer, "|") == 0) {
-      /* don't handle multiple pipes, return a syntax error */
-      if (state.pipe) {
-        state.syntax_pipe = 1;
-      } else {
-        state.pipe = 1;
-      }
-      save_current = 0;
     }
 
     if (save_current) {
