@@ -202,7 +202,7 @@ int main(void) {
   (void)signal(SIGTERM, catch_term);
 
   /* Set the process group to the current pid */
-  if (setpgid(0, getpgrp()) != 0) {
+  if (setpgid(0, 0) != 0) {
     perror("Error setting process group, exiting.");
     exit(EXIT_FAILURE);
   }
