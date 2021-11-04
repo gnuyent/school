@@ -1,0 +1,16 @@
+I wrote p3helper.c code by myself.
+
+I believe everything works under all conditions.
+
+p3helper.c coordinates the robots through the following process:
+1. Each robot calls initStudentStuff(). They all try to open a semaphorenamed the value in semaphoreMutx. Now there are two "pathways":
+  Path 1. Ostensibly, only a single robot will successfully create the mutex. It enters the critical region (sem_wait on the mutex). This robot then initializes the countfile (named whatever COUNTFILE is) which stores the address to its current total_widgets. It leaves the critical region.
+  Path 2. Since this robot was not able to *successfully* create the mutex, we assume the mutex was created successfully elsewhere. We simply open the mutex with the same name.
+2. Now, each robot waits (inside placeWidget()) until the first robot finishes initializing the countfile.
+3. Once the first robot finishes initializing, all robots will wait for the mutex to be freed (sem_wait), do what it needs to do, then free the mutex (sem_post).
+
+I used the CHK.h file from ~cs480. I also referenced ~cs480/semex.c for inspiration on lseek() and read()/write().
+
+I used the "remaining rows" formula from https://stackoverflow.com/a/2913319. This is an adapted version of the quadratic formula of (n * (n+1)) / 2 = m. This formula calculates how many rows are remaining (n) from a given number of total_widgets.
+
+From the current number of remaining rows, we can calculate how many columns in the current lines are left. This is simply computed by subtracting (n * (n+1)) / 2 from the number of total_widgets.
