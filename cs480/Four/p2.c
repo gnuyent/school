@@ -1,4 +1,4 @@
-/* p2.c - implementation of p2.
+/* p2.c - a modified implementation of p2 for Program 4.
  *
  *   Author     : Brandon Nguyen (823630399)
  *   Course     : CS-480 - Operating Systems
@@ -8,9 +8,6 @@
  */
 
 #include "p2.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 /*
  * Shell bitfield flags.

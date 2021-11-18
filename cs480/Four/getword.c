@@ -9,7 +9,6 @@
   Documentation graciously retrieved and modified from `~cs480/One/getword.h`.
 */
 #include "getword.h"
-#include <stdio.h>
 
 // lexstate - represents the current state of the lexer
 typedef enum lexstate {
