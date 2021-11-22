@@ -143,12 +143,13 @@ int cd() {
 int lsF() {
   DIR *dirp;
   struct dirent *dp;
+  struct stat sb;
+  int fstatus;
 
   if (nargc == 1) {
     dirp = opendir(".");
   } else {
-    struct stat sb;
-    int fstatus = stat(nargv[1], &sb);
+    fstatus = stat(nargv[1], &sb);
     // The given file/folder name does not exist (or another error was raised).
     if (fstatus == -1) {
       fprintf(stderr, "%s: No such file or directory.\n", nargv[1]);
@@ -175,7 +176,28 @@ int lsF() {
   for (;;) {
     // Continue looping through files as long as a pointer exists
     if ((dp = readdir(dirp)) != NULL) {
-      printf("%s\n", dp->d_name);
+      fstatus = lstat(dp->d_name, &sb);
+      if (fstatus != 0) {
+        // could not read file
+        printf("%s\n", dp->d_name);
+      } else if (S_ISDIR(sb.st_mode)) {
+        printf("%s/\n", dp->d_name);
+      } else if (S_ISLNK(sb.st_mode)) {
+        fstatus = stat(dp->d_name, &sb);
+        if (fstatus != 0) {
+          // valid link
+          printf("%s@\n", dp->d_name);
+        } else {
+          // broken link
+          printf("%s&\n", dp->d_name);
+        }
+      } else if (S_ISREG(sb.st_mode)) {
+        if (sb.st_mode & S_IXUSR) {
+          printf("%s*\n", dp->d_name);
+        } else {
+          printf("%s\n", dp->d_name);
+        }
+      }
     } else {
       closedir(dirp);
       break;
