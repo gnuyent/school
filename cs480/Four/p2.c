@@ -90,6 +90,9 @@ char *redir_out_target = NULL;
 /* Input file for redirection (<). Only read when state.redir_in is 1. */
 char *redir_in_target = NULL;
 
+int command_count;
+int lsFargs = 0;
+
 /*
   Shell built-in handler for `cd`. Allows the user to change directories
   specified in `nargv`. `cd` only accepts 1 argument.
@@ -131,73 +134,248 @@ int lsF() {
   struct dirent *dp;
   struct stat sb;
   int fstatus;
-  char folder[1024];
+  char folder[STORAGE];
 
-  if (nargc == 1) {
-    dirp = opendir(".");
-    // Retrieve current absolute directory for fancy ls symbols
-    getcwd(folder, 1024);
-    nargv[1] = folder;
-  } else {
-    fstatus = stat(nargv[1], &sb);
-    // The given file/folder name does not exist (or another error was raised).
-    if (fstatus == -1) {
-      fprintf(stderr, "%s: No such file or directory.\n", nargv[1]);
-      return -1;
+  for (int i = 0; i < nargc; i++) {
+    if (nargv[i] == NULL) {
+      break;
+    } else if (lsFargs == 0) {
+      dirp = opendir(".");
+      // Retrieve current absolute directory for fancy ls symbols
+      // getcwd(folder, STORAGE);
+      // dirp = opendir(folder);
     } else {
-      // Determine if the given filename is a directory or not
-      // https://stackoverflow.com/a/3828537
-      if (S_ISDIR(sb.st_mode)) {
-        dirp = opendir(nargv[1]);
+      fstatus = stat(nargv[1], &sb);
+      // The given file/folder name does not exist (or another error was
+      // raised).
+      if (fstatus == -1) {
+        fprintf(stderr, "%s: No such file or directory.\n", nargv[1]);
+        return -1;
       } else {
-        // Parrot back the filename and return
-        printf("%s\n", nargv[1]);
-        return 0;
+        // Determine if the given filename is a directory or not
+        // https://stackoverflow.com/a/3828537
+        if (S_ISDIR(sb.st_mode)) {
+          dirp = opendir(nargv[1]);
+        } else {
+          // Parrot back the filename
+          printf("%s\n", nargv[1]);
+          continue;
+        }
       }
     }
-  }
 
-  // If filename cannot be accessed or cannot malloc(3) enough memory.
-  if (dirp == NULL) {
-    fprintf(stderr, "%s unreadable.\n", nargv[1]);
-    return -1;
-  }
+    // If filename cannot be accessed or cannot malloc(3) enough memory.
+    if (dirp == NULL) {
+      fprintf(stderr, "%s unreadable.\n", nargv[1]);
+      return -1;
+    }
 
-  for (;;) {
-    // Continue looping through files as long as a pointer exists
-    if ((dp = readdir(dirp)) != NULL) {
-      char filename[1024];
-      snprintf(filename, 1024, "%s/%s", nargv[1], dp->d_name);
-      fstatus = lstat(filename, &sb);
-      if (fstatus != 0) {
-        // could not read file
-        printf("%s\n", dp->d_name);
-      } else if (S_ISDIR(sb.st_mode)) {
-        printf("%s/\n", dp->d_name);
-      } else if (S_ISLNK(sb.st_mode)) {
-        fstatus = stat(filename, &sb);
+    for (;;) {
+      // Continue looping through files as long as a pointer exists
+      if ((dp = readdir(dirp)) != NULL) {
+        // char filename[1024];
+        // snprintf(filename, 1024, "%s/%s", nargv[1], dp->d_name);
+        // fstatus = lstat(filename, &sb);
+        fstatus = lstat(dp->d_name, &sb);
         if (fstatus != 0) {
-          // broken link
-          printf("%s&\n", dp->d_name);
-        } else {
-          // valid link
-          printf("%s@\n", dp->d_name);
-        }
-      } else if (S_ISREG(sb.st_mode)) {
-        if (sb.st_mode & S_IXUSR || sb.st_mode & S_IXGRP ||
-            sb.st_mode & S_IXOTH) {
-          printf("%s*\n", dp->d_name);
-        } else {
+          // could not read file
           printf("%s\n", dp->d_name);
+        } else if (S_ISDIR(sb.st_mode)) {
+          printf("%s/\n", dp->d_name);
+        } else if (S_ISLNK(sb.st_mode)) {
+          fstatus = stat(dp->d_name, &sb);
+          if (fstatus != 0) {
+            // broken link
+            printf("%s&\n", dp->d_name);
+          } else {
+            // valid link
+            printf("%s@\n", dp->d_name);
+          }
+        } else if (S_ISREG(sb.st_mode)) {
+          if (sb.st_mode & S_IXUSR || sb.st_mode & S_IXGRP ||
+              sb.st_mode & S_IXOTH) {
+            printf("%s*\n", dp->d_name);
+          } else {
+            printf("%s\n", dp->d_name);
+          }
         }
+      } else {
+        closedir(dirp);
+        break;
       }
-    } else {
-      closedir(dirp);
-      break;
     }
   }
 
   return 0;
+}
+
+int get_command_pos(int command_num) {
+  if (command_num <= 0) {
+    return -1;
+  } else {
+    int curr_command = 1;
+    for (int i = 0; i < nargc; i++) {
+      if (curr_command == command_num) {
+        return i;
+      }
+      if (nargv[i] == NULL) {
+        curr_command++;
+      }
+    }
+  }
+}
+
+void middle(int in, int out, int command_num) {
+  int fildes[2];
+  pid_t childpid;
+  int i = get_command_pos(command_num);
+
+  if (command_num == 0) {
+    return;
+  } else if (command_num == 1) { // first (left-most) command
+    childpid = fork();
+
+    if (childpid == -1) {
+      /* parent */
+      fprintf(stderr, "%s: Cannot fork child.\n", nargv[0]);
+      exit(EXIT_FAILURE);
+    } else if (childpid == 0) {
+      /* input redirection */
+      int fd = (redir_in_target == NULL) ? open("/dev/null", O_RDONLY)
+                                         : open(redir_in_target, O_RDONLY);
+      if (fd < 0) {
+        fprintf(stderr, "%s: No such file or directory.\n", redir_in_target);
+        return;
+      } else if (dup2(fd, STDIN_FILENO) < 0 || close(fd) < 0) {
+        fprintf(stderr, "%s: Error redirecting input.\n", redir_in_target);
+        exit(EXIT_FAILURE);
+      }
+      // replace first command output stream with pipe
+      if (dup2(out, STDOUT_FILENO) < 0 || close(out) < 0 || close(in) < 0) {
+        perror("Error piping.\n");
+        exit(EXIT_FAILURE);
+      }
+      /* child */
+      if (execvp(nargv[0], nargv) == -1) {
+        fprintf(stderr, "%s: Command not found.\n", nargv[0]);
+        exit(EXIT_FAILURE);
+      }
+      exit(EXIT_SUCCESS);
+    }
+  } else {
+    pipe(fildes);
+    middle(fildes[0], fildes[1], command_num - 1);
+    if (dup2(out, STDOUT_FILENO) < 0 || close(out) < 0 || close(in) < 0) {
+      perror("Error piping.\n");
+      exit(EXIT_FAILURE);
+    }
+    childpid = fork();
+
+    if (childpid == -1) {
+      /* parent */
+      fprintf(stderr, "%s: Cannot fork child.\n", nargv[0]);
+      exit(EXIT_FAILURE);
+    } else if (childpid == 0) {
+      // connect to self-made input pipe
+      if (dup2(fildes[0], STDOUT_FILENO) < 0 || close(fildes[0]) < 0 ||
+          close(fildes[1]) < 0) {
+        perror("Error piping.\n");
+        exit(EXIT_FAILURE);
+      }
+      /* child */
+      if (execvp(nargv[i], nargv + i) == -1) {
+        fprintf(stderr, "%s: Command not found.\n", nargv[0]);
+        exit(EXIT_FAILURE);
+      }
+      exit(EXIT_SUCCESS);
+    }
+  }
+}
+
+void cmd() {
+  /* Save copies of stdin/stdout to restore later on */
+  int original_stdin = dup(STDIN_FILENO);
+  int original_stdout = dup(STDOUT_FILENO);
+  /* file descriptors */
+  int fildes[2];
+  /* child pid */
+  pid_t childpid;
+  int i = get_command_pos(command_count);
+
+  pipe(fildes);
+  middle(fildes[0], fildes[1], command_count - 1);
+
+  /* last command */
+  /* output redirection */
+  if (redir_out_target != NULL) {
+    /* fail if file already exists */
+    int wrflags = O_WRONLY | O_CREAT;
+    if (state.redir_out)
+      wrflags = wrflags | O_EXCL;
+
+    /* 0644 = -rw-r--r-- */
+    int perms = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+    int fd = open(redir_out_target, wrflags, perms);
+    if (fd < 0) {
+      fprintf(stderr, "%s: File exists.\n", redir_out_target);
+      close(fd);
+      return;
+    } else if (dup2(fd, STDOUT_FILENO) < 0 || close(fd) < 0) {
+      fprintf(stderr, "%s: Error redirecting output.\n", redir_out_target);
+      exit(EXIT_FAILURE);
+    }
+  }
+
+  childpid = fork();
+  if (childpid == -1) {
+    /* parent */
+    fprintf(stderr, "%s: Cannot fork child.\n", nargv[0]);
+    exit(EXIT_FAILURE);
+  } else if (childpid == 0) {
+    if (command_count > 1) {
+      if (dup2(fildes[1], STDIN_FILENO) < 0 || close(fildes[0]) < 0 ||
+          close(fildes[1]) < 0) {
+        perror("Error piping.\n");
+        exit(EXIT_FAILURE);
+      };
+    }
+
+    if (execvp(nargv[i], nargv + i) == -1) {
+      fprintf(stderr, "%s: Command not found.\n", nargv[i]);
+      exit(EXIT_FAILURE);
+    }
+
+    if (close(fildes[0]) < 0 || close(fildes[1]) < 0) {
+      perror("Error piping.\n");
+      exit(EXIT_FAILURE);
+    };
+    exit(EXIT_SUCCESS);
+  }
+
+  /* restore original stdin/stdout since they are generally overwritten */
+  if (dup2(original_stdin, STDIN_FILENO) < 0 || close(original_stdin) < 0) {
+    perror("Unable to recover stdin.\n");
+    exit(EXIT_FAILURE);
+  }
+
+  if (dup2(original_stdout, STDOUT_FILENO) < 0 || close(original_stdout) < 0) {
+    perror("Unable to recover stdout.\n");
+    exit(EXIT_FAILURE);
+  }
+
+  if (state.bg) {
+    printf("%s [%d]\n", nargv[0], childpid);
+    // } else if (state.pipe) {
+    //   /* waiting for RHS of pipe */
+    //   while (wait(NULL) != grandchildpid) {
+    //     printf("%d\n", grandchildpid);
+    //     /* no-op */
+    //   }
+  } else {
+    while (wait(NULL) != childpid) {
+      /* no-op */
+    }
+  }
 }
 
 /*
@@ -249,15 +427,13 @@ int main(void) {
   }
 
   while (!state.complete) {
-    /* Save copies of stdin/stdout to restore later on */
-    int original_stdin = dup(STDIN_FILENO);
-    int original_stdout = dup(STDOUT_FILENO);
-
     /* reset bitfield */
     (void)memset(&state, 0, sizeof(state));
 
     /* reset variables */
     nargc = 0;
+    command_count = 0;
+    lsFargs = 0;
     redir_in_target = NULL;
     redir_out_target = NULL;
 
@@ -277,138 +453,11 @@ int main(void) {
     } else if (state.call_lsf) {
       lsF();
     }
+    /* do some kind of forking */
+    else if (state.call_cmd) {
+      cmd();
+    }
   }
-  /* do some kind of forking */
-  // } else if (state.call_cmd) {
-  //   pid_t childpid, grandchildpid;
-  //   /* file descriptors for input/output redirection */
-  //   int fd;
-
-  //   /* input redirection */
-  //   fd = (redir_in_target == NULL) ? open("/dev/null", O_RDONLY)
-  //                                  : open(redir_in_target, O_RDONLY);
-  //   if (fd < 0) {
-  //     fprintf(stderr, "%s: No such file or directory.\n",
-  //     redir_in_target); continue;
-  //   } else if (dup2(fd, STDIN_FILENO) < 0 || close(fd) < 0) {
-  //     fprintf(stderr, "%s: Error redirecting input.\n", redir_in_target);
-  //     exit(EXIT_FAILURE);
-  //   }
-
-  //   /* output redirection */
-  //   if (redir_out_target != NULL) {
-  //     int wrflags =
-  //         state.redir_out ? O_WRONLY | O_CREAT | O_EXCL : O_WRONLY |
-  //         O_CREAT;
-  //     /* 0644 = -rw-r--r-- */
-  //     int perms = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
-  //     fd = open(redir_out_target, wrflags, perms);
-  //     if (fd < 0) {
-  //       fprintf(stderr, "%s: File exists.\n", redir_out_target);
-  //       close(fd);
-  //       continue;
-  //     } else if (dup2(fd, STDOUT_FILENO) < 0 || close(fd) < 0) {
-  //       fprintf(stderr, "%s: Error redirecting output.\n",
-  //       redir_out_target); exit(EXIT_FAILURE);
-  //     }
-  //   }
-
-  //   /* begin forking children */
-  //   if (state.pipe) {
-  //     /* piping */
-  //     grandchildpid = fork(); /* RHS of pipe */
-  //     if (grandchildpid == -1) {
-  //       /* parent */
-  //       fprintf(stderr, "%s: Cannot fork read pipe end.\n", pargv[0]);
-  //       exit(EXIT_FAILURE);
-  //     } else if (grandchildpid == 0) {
-  //       /* grandchild */
-  //       int fildes[2];
-  //       pipe(fildes);
-
-  //       childpid = fork();
-  //       if (childpid == -1) {
-  //         /* grandchild */
-  //         fprintf(stderr, "%s: Cannot fork write pipe end.\n", nargv[0]);
-  //         exit(EXIT_FAILURE);
-  //       } else if (childpid == 0) {
-  //         /* child */
-  //         if (dup2(fildes[1], STDOUT_FILENO) < 0 || close(fildes[0]) < 0
-  //         ||
-  //             close(fildes[1]) < 0) {
-  //           perror("Error piping.\n");
-  //           exit(EXIT_FAILURE);
-  //         }
-  //         if (execvp(nargv[0], nargv) == -1) {
-  //           fprintf(stderr, "%s: Command not found.\n", nargv[0]);
-  //           exit(EXIT_FAILURE);
-  //         }
-  //         exit(EXIT_SUCCESS);
-  //       }
-
-  //       if (dup2(fildes[0], STDIN_FILENO) < 0 || close(fildes[0]) < 0 ||
-  //           close(fildes[1]) < 0) {
-  //         perror("Error piping.\n");
-  //         exit(EXIT_FAILURE);
-  //       }
-
-  //       if (execvp(pargv[0], pargv) == -1) {
-  //         fprintf(stderr, "%s: Command not found.\n", pargv[0]);
-  //         exit(EXIT_FAILURE);
-  //       }
-
-  //       if (close(fildes[0]) < 0 || close(fildes[1]) < 0) {
-  //         perror("Error piping.\n");
-  //         exit(EXIT_FAILURE);
-  //       };
-  //       exit(EXIT_SUCCESS);
-  //     }
-  //   } else {
-  //     /* no piping */
-  //     childpid = fork();
-
-  //     if (childpid == -1) {
-  //       /* parent */
-  //       fprintf(stderr, "%s: Cannot fork child.\n", nargv[0]);
-  //       exit(EXIT_FAILURE);
-  //     } else if (childpid == 0) {
-  //       /* child */
-  //       if (execvp(nargv[0], nargv) == -1) {
-  //         fprintf(stderr, "%s: Command not found.\n", nargv[0]);
-  //         exit(EXIT_FAILURE);
-  //       }
-  //       exit(EXIT_SUCCESS);
-  //     }
-  //   }
-  //   /* parent */
-  //   /* restore original stdin/stdout since they are generally overwritten
-  //   */ if (dup2(original_stdin, STDIN_FILENO) < 0 ||
-  //   close(original_stdin) < 0) {
-  //     perror("Unable to recover stdin.\n");
-  //     exit(EXIT_FAILURE);
-  //   }
-
-  //   if (dup2(original_stdout, STDOUT_FILENO) < 0 ||
-  //       close(original_stdout) < 0) {
-  //     perror("Unable to recover stdout.\n");
-  //     exit(EXIT_FAILURE);
-  //   }
-
-  //   if (state.bg) {
-  //     printf("%s [%d]\n", nargv[0], childpid);
-  //   } else if (state.pipe) {
-  //     /* waiting for RHS of pipe */
-  //     while (wait(NULL) != grandchildpid) {
-  //       printf("%d\n", grandchildpid);
-  //       /* no-op */
-  //     }
-  //   } else {
-  //     while (wait(NULL) != childpid) {
-  //       /* no-op */
-  //     }
-  //   }
-  // }
-  // }
 
   /* terminate any children that are still running under the same pgrp */
   killpg(getpgrp(), SIGTERM);
@@ -452,26 +501,20 @@ void parse() {
       break;
     } else if (word_width > 0) {
       if (state.redir_in && redir_in_target == NULL) {
+        /* save the next word as input redirection target */
         if (strcmp(current_buffer, "&") == 0)
           state.syntax_invalid_redir_target = 1;
         else
           redir_in_target = current_buffer;
-      } else if (state.redir_out && redir_out_target == NULL) {
+      } else if ((state.redir_out || state.redir_out_force) &&
+                 redir_out_target == NULL) {
+        /* save the next word as output redirection target */
         if (strcmp(current_buffer, "&") == 0)
           state.syntax_invalid_redir_target = 1;
         else
           redir_out_target = current_buffer;
-      }
-      /*
-       * We don't want to copy any arguments if we have a signal to
-       * background or redirect our output since we need to have special
-       * behavior. Therefore, we just continue parsing while setting the
-       * proper flag.
-       *
-       * If we encounter multiple redirects or pipes, we want to continue
-       * parsing to "gobble" up the remaining characters.
-       */
-      else if (strcmp(current_buffer, "&") == 0) {
+      } else if (strcmp(current_buffer, "&") == 0) {
+        /* background */
         state.bg = 1;
         break;
       } else if (strcmp(current_buffer, ">") == 0) {
@@ -480,21 +523,26 @@ void parse() {
           state.syntax_out_redirect = 1;
         else
           state.redir_out = 1;
+        continue;
       } else if (strcmp(current_buffer, ">!") == 0) {
         /* don't handle multiple output redirects, return a syntax error */
         if (state.redir_out_force || state.redir_out)
           state.syntax_out_redirect = 1;
         else
           state.redir_out_force = 1;
+        continue;
       } else if (strcmp(current_buffer, "<") == 0) {
         /* don't handle multiple input redirects, return a syntax error */
         if (state.redir_in)
           state.syntax_in_redirect = 1;
         else
           state.redir_in = 1;
+        continue;
       } else if (strcmp(current_buffer, "|") == 0) {
         /* don't handle multiple pipes, return a syntax error */
         state.pipe = 1;
+        nargc++;
+        command_count++;
       } else if (firstrun) {
         if (strcmp(current_buffer, "cd") == 0)
           state.call_cd = 1;
@@ -502,12 +550,20 @@ void parse() {
           state.call_lsf = 1;
         else
           state.call_cmd = 1;
+
+        nargv[nargc] = current_buffer;
+        nargc++;
+        command_count++;
         firstrun = 0;
+      } else {
+        /* add arguments to nargv */
+        nargv[nargc] = current_buffer;
+        nargc++;
+        if (state.call_lsf && !state.pipe) {
+          lsFargs++;
+        }
       }
     }
-
-    nargv[nargc] = current_buffer;
-    nargc++;
 
     /* add 1 to include the null character */
     buffer_idx += word_width + 1;

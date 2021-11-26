@@ -315,21 +315,17 @@ int main(void) {
         /* piping */
         grandchildpid = fork(); /* RHS of pipe */
         if (grandchildpid == -1) {
-          /* parent */
           fprintf(stderr, "%s: Cannot fork read pipe end.\n", pargv[0]);
           exit(EXIT_FAILURE);
         } else if (grandchildpid == 0) {
-          /* grandchild */
           int fildes[2];
           pipe(fildes);
 
           childpid = fork();
           if (childpid == -1) {
-            /* grandchild */
             fprintf(stderr, "%s: Cannot fork write pipe end.\n", nargv[0]);
             exit(EXIT_FAILURE);
           } else if (childpid == 0) {
-            /* child */
             if (dup2(fildes[1], STDOUT_FILENO) < 0 || close(fildes[0]) < 0 ||
                 close(fildes[1]) < 0) {
               perror("Error piping.\n");
