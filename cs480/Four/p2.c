@@ -225,159 +225,6 @@ int get_command_pos(int command_num) {
   }
 }
 
-void middle(int in, int out, int command_num) {
-  int fildes[2];
-  pid_t childpid;
-  int i = get_command_pos(command_num);
-
-  if (command_num == 0) {
-    return;
-  } else if (command_num == 1) { // first (left-most) command
-    childpid = fork();
-
-    if (childpid == -1) {
-      /* parent */
-      fprintf(stderr, "%s: Cannot fork child.\n", nargv[0]);
-      exit(EXIT_FAILURE);
-    } else if (childpid == 0) {
-      /* input redirection */
-      int fd = (redir_in_target == NULL) ? open("/dev/null", O_RDONLY)
-                                         : open(redir_in_target, O_RDONLY);
-      if (fd < 0) {
-        fprintf(stderr, "%s: No such file or directory.\n", redir_in_target);
-        return;
-      } else if (dup2(fd, STDIN_FILENO) < 0 || close(fd) < 0) {
-        fprintf(stderr, "%s: Error redirecting input.\n", redir_in_target);
-        exit(EXIT_FAILURE);
-      }
-      // replace first command output stream with pipe
-      if (dup2(out, STDOUT_FILENO) < 0 || close(out) < 0 || close(in) < 0) {
-        perror("Error piping.\n");
-        exit(EXIT_FAILURE);
-      }
-      /* child */
-      if (execvp(nargv[0], nargv) == -1) {
-        fprintf(stderr, "%s: Command not found.\n", nargv[0]);
-        exit(EXIT_FAILURE);
-      }
-      exit(EXIT_SUCCESS);
-    }
-  } else {
-    pipe(fildes);
-    middle(fildes[0], fildes[1], command_num - 1);
-    if (dup2(out, STDOUT_FILENO) < 0 || close(out) < 0 || close(in) < 0) {
-      perror("Error piping.\n");
-      exit(EXIT_FAILURE);
-    }
-    childpid = fork();
-
-    if (childpid == -1) {
-      /* parent */
-      fprintf(stderr, "%s: Cannot fork child.\n", nargv[0]);
-      exit(EXIT_FAILURE);
-    } else if (childpid == 0) {
-      // connect to self-made input pipe
-      if (dup2(fildes[0], STDOUT_FILENO) < 0 || close(fildes[0]) < 0 ||
-          close(fildes[1]) < 0) {
-        perror("Error piping.\n");
-        exit(EXIT_FAILURE);
-      }
-      /* child */
-      if (execvp(nargv[i], nargv + i) == -1) {
-        fprintf(stderr, "%s: Command not found.\n", nargv[0]);
-        exit(EXIT_FAILURE);
-      }
-      exit(EXIT_SUCCESS);
-    }
-  }
-}
-
-void cmd() {
-  /* Save copies of stdin/stdout to restore later on */
-  int original_stdin = dup(STDIN_FILENO);
-  int original_stdout = dup(STDOUT_FILENO);
-  /* file descriptors */
-  int fildes[2];
-  /* child pid */
-  pid_t childpid;
-  int i = get_command_pos(command_count);
-
-  pipe(fildes);
-  middle(fildes[0], fildes[1], command_count - 1);
-
-  /* last command */
-  /* output redirection */
-  if (redir_out_target != NULL) {
-    /* fail if file already exists */
-    int wrflags = O_WRONLY | O_CREAT;
-    if (state.redir_out)
-      wrflags = wrflags | O_EXCL;
-
-    /* 0644 = -rw-r--r-- */
-    int perms = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
-    int fd = open(redir_out_target, wrflags, perms);
-    if (fd < 0) {
-      fprintf(stderr, "%s: File exists.\n", redir_out_target);
-      close(fd);
-      return;
-    } else if (dup2(fd, STDOUT_FILENO) < 0 || close(fd) < 0) {
-      fprintf(stderr, "%s: Error redirecting output.\n", redir_out_target);
-      exit(EXIT_FAILURE);
-    }
-  }
-
-  childpid = fork();
-  if (childpid == -1) {
-    /* parent */
-    fprintf(stderr, "%s: Cannot fork child.\n", nargv[0]);
-    exit(EXIT_FAILURE);
-  } else if (childpid == 0) {
-    if (command_count > 1) {
-      if (dup2(fildes[1], STDIN_FILENO) < 0 || close(fildes[0]) < 0 ||
-          close(fildes[1]) < 0) {
-        perror("Error piping.\n");
-        exit(EXIT_FAILURE);
-      };
-    }
-
-    if (execvp(nargv[i], nargv + i) == -1) {
-      fprintf(stderr, "%s: Command not found.\n", nargv[i]);
-      exit(EXIT_FAILURE);
-    }
-
-    if (close(fildes[0]) < 0 || close(fildes[1]) < 0) {
-      perror("Error piping.\n");
-      exit(EXIT_FAILURE);
-    };
-    exit(EXIT_SUCCESS);
-  }
-
-  /* restore original stdin/stdout since they are generally overwritten */
-  if (dup2(original_stdin, STDIN_FILENO) < 0 || close(original_stdin) < 0) {
-    perror("Unable to recover stdin.\n");
-    exit(EXIT_FAILURE);
-  }
-
-  if (dup2(original_stdout, STDOUT_FILENO) < 0 || close(original_stdout) < 0) {
-    perror("Unable to recover stdout.\n");
-    exit(EXIT_FAILURE);
-  }
-
-  if (state.bg) {
-    printf("%s [%d]\n", nargv[0], childpid);
-    // } else if (state.pipe) {
-    //   /* waiting for RHS of pipe */
-    //   while (wait(NULL) != grandchildpid) {
-    //     printf("%d\n", grandchildpid);
-    //     /* no-op */
-    //   }
-  } else {
-    while (wait(NULL) != childpid) {
-      /* no-op */
-    }
-  }
-}
-
 /*
  * Signal Handler - terminates shell on EOF (<C-d>).
  */
@@ -455,14 +302,37 @@ int main(void) {
     }
     /* do some kind of forking */
     else if (state.call_cmd) {
-      cmd();
-    }
-  }
+      pid_t childpid;
+      int fildes[2];
+      int in;
+      int current_command = command_count - 1;
 
-  /* terminate any children that are still running under the same pgrp */
-  killpg(getpgrp(), SIGTERM);
-  printf("p2 terminated.\n");
-  return EXIT_SUCCESS;
+      pipe(fildes);
+      childpid = fork();
+      if (childpid == -1) {
+        /* parent */
+        fprintf(stderr, "%s: Cannot fork child.\n", nargv[0]);
+        exit(EXIT_FAILURE);
+      } else if (childpid == 0) {
+        while (current_command > 1) {
+          pid_t pid = fork();
+        }
+      } else {
+        if (state.bg) {
+          printf("%s [%d]\n", nargv[0], childpid);
+        } else {
+          while (wait(NULL) != childpid) {
+            /* no-op */
+          }
+        }
+      }
+    }
+
+    /* terminate any children that are still running under the same pgrp */
+    killpg(getpgrp(), SIGTERM);
+    printf("p2 terminated.\n");
+    return EXIT_SUCCESS;
+  }
 }
 
 /*
