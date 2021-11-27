@@ -230,43 +230,64 @@ int get_command_pos(int command_num) {
  * redirection, and waiting automatically.
  */
 void command() {
-  pid_t eldestpid;
-  pid_t nextpid;
-  int fildes[2 * pipe_count];
-  int pos;
-
-  // set up pipes
-  for (int i = 0; i < pipe_count; i++) {
-    pipe(fildes + (i * 2));
-  }
+  pid_t eldestpid, nextpid;
+  int fildes_size = 2 * pipe_count;
+  int fildes[fildes_size];
+  int pos, pidx;
+  int original_stdin = dup(STDIN_FILENO);
+  int original_stdout = dup(STDOUT_FILENO);
 
   eldestpid = fork();
   if (eldestpid == -1) {
     perror("Error forking.\n");
     exit(EXIT_FAILURE);
   } else if (eldestpid == 0) {
-    // printf("\nRoot. pid: %d\n", getpid());
+    if (command_count > 1) {
+      pipe(fildes + fildes_size - 2); // last pipe
+    }
     for (int i = command_count - 1; i > 0; i--) {
-      /* replace middle stdout to right command's input */
-      if (dup2(fildes[1], STDOUT_FILENO) < 0 || close(fildes[0]) < 0 ||
-          close(fildes[1]) < 0) {
-        perror("Error piping.\n");
-        exit(EXIT_FAILURE);
+      if (i > 1) {
+        pidx = 2 * (i - 2);  // idx of read pipe before current command
+        pipe(fildes + pidx); // pipe before current command
       }
-      pipe(fildes);
-
       nextpid = fork();
       if (nextpid == -1) {
         perror("Error forking.\n");
         exit(EXIT_FAILURE);
       } else if (nextpid == 0) {
-        /* middle */
-        // printf("\nChild. pid: %d parent pid: %d\n", getpid(), getppid());
-        /* replace middle stdin to left command's output */
-        if (dup2(fildes[0], STDIN_FILENO) < 0 || close(fildes[0]) < 0 ||
-            close(fildes[1]) < 0) {
-          perror("Error piping.\n");
-          exit(EXIT_FAILURE);
+        /* FIRST command */
+        if (i == 1) {
+          /* replace stdin with file */
+          int fd = (redir_in_target == NULL) ? open("/dev/null", O_RDONLY)
+                                             : open(redir_in_target, O_RDONLY);
+          if (fd < 0) {
+            fprintf(stderr, "%s: No such file or directory.\n",
+                    redir_in_target);
+            return;
+          } else if (dup2(fd, STDIN_FILENO) < 0 || close(fd) < 0) {
+            fprintf(stderr, "%s: Error redirecting input.\n", redir_in_target);
+            exit(EXIT_FAILURE);
+          }
+          /* replace stdout to right command's input */
+          if (dup2(fildes[1], STDOUT_FILENO) < 0 || close(fildes[1]) < 0) {
+            perror("Error piping.\n");
+            exit(EXIT_FAILURE);
+          }
+          /* MIDDLE command */
+        } else {
+          /* replace middle stdin to left command's output */
+          if (dup2(fildes[pidx], STDIN_FILENO) < 0 || close(fildes[pidx]) < 0 ||
+              /* replace middle stdout to right command's input */
+              dup2(fildes[pidx + 3], STDOUT_FILENO) < 0 ||
+              close(fildes[pidx + 3]) < 0) {
+            perror("Error piping.\n");
+            exit(EXIT_FAILURE);
+          }
+        }
+
+        // cleanup pipes
+        for (int i = 0; i < fildes_size; i++) {
+          close(fildes[i]);
         }
 
         /* execute middle command */
@@ -277,14 +298,15 @@ void command() {
         }
         exit(EXIT_SUCCESS);
       } else {
+        close(fildes[1]);
         break;
       }
     }
     /* eldest */
     /* replace eldest stdin */
     if (command_count > 1) {
-      if (dup2(fildes[0], STDIN_FILENO) < 0 || close(fildes[0]) < 0 ||
-          close(fildes[1]) < 0) {
+      if (dup2(fildes[fildes_size - 2], STDIN_FILENO) < 0 ||
+          close(fildes[fildes_size - 2]) < 0) {
         perror("Error piping.\n");
         exit(EXIT_FAILURE);
       }
@@ -307,6 +329,10 @@ void command() {
         exit(EXIT_FAILURE);
       }
     }
+    // cleanup pipes
+    for (int i = 0; i < fildes_size; i++) {
+      close(fildes[i]);
+    }
 
     /* execute eldest command */
     pos = get_command_pos(command_count);
@@ -317,14 +343,18 @@ void command() {
 
     exit(EXIT_SUCCESS);
   }
+  if (dup2(original_stdin, STDIN_FILENO) < 0 || close(original_stdin) < 0) {
+    perror("Unable to recover stdin.\n");
+    exit(EXIT_FAILURE);
+  }
+
+  if (dup2(original_stdout, STDOUT_FILENO) < 0 || close(original_stdout) < 0) {
+    perror("Unable to recover stdout.\n");
+    exit(EXIT_FAILURE);
+  }
 
   while (wait(NULL) != eldestpid) {
     /* no-op */
-  }
-  // cleanup pipes
-  for (int i = 0; i < 2*pipe_count;i++) {
-    // ignore errors here, there will be lots...
-    close(fildes[i]);
   }
 }
 
@@ -382,10 +412,12 @@ int main(void) {
   while (!state.complete) {
     /* reset bitfield */
     (void)memset(&state, 0, sizeof(state));
+    (void)memset(&nargv, 0, sizeof(nargv));
 
     /* reset variables */
     nargc = 0;
     command_count = 0;
+    pipe_count = 0;
     lsFargs = 0;
     redir_in_target = NULL;
     redir_out_target = NULL;
