@@ -91,6 +91,7 @@ char *redir_out_target = NULL;
 char *redir_in_target = NULL;
 
 int command_count;
+int pipe_count;
 int lsFargs = 0;
 
 /*
@@ -210,9 +211,7 @@ int lsF() {
 }
 
 int get_command_pos(int command_num) {
-  if (command_num <= 0) {
-    return -1;
-  } else {
+  if (command_num > 0) {
     int curr_command = 1;
     for (int i = 0; i < nargc; i++) {
       if (curr_command == command_num) {
@@ -223,6 +222,110 @@ int get_command_pos(int command_num) {
       }
     }
   }
+  return -1;
+}
+
+/*
+ * Command runner for user-specified arguments. Handles piping, backgrounding,
+ * redirection, and waiting automatically.
+ */
+void command() {
+  pid_t eldestpid;
+  pid_t nextpid;
+  int fildes[2 * pipe_count];
+  int pos;
+
+  // set up pipes
+  for (int i = 0; i < pipe_count; i++) {
+    pipe(fildes + (i * 2));
+  }
+
+  eldestpid = fork();
+  if (eldestpid == -1) {
+    perror("Error forking.\n");
+    exit(EXIT_FAILURE);
+  } else if (eldestpid == 0) {
+    // printf("\nRoot. pid: %d\n", getpid());
+    for (int i = command_count - 1; i > 0; i--) {
+      /* replace middle stdout to right command's input */
+      if (dup2(fildes[1], STDOUT_FILENO) < 0 || close(fildes[0]) < 0 ||
+          close(fildes[1]) < 0) {
+        perror("Error piping.\n");
+        exit(EXIT_FAILURE);
+      }
+      pipe(fildes);
+
+      nextpid = fork();
+      if (nextpid == -1) {
+        perror("Error forking.\n");
+        exit(EXIT_FAILURE);
+      } else if (nextpid == 0) {
+        /* middle */
+        // printf("\nChild. pid: %d parent pid: %d\n", getpid(), getppid());
+        /* replace middle stdin to left command's output */
+        if (dup2(fildes[0], STDIN_FILENO) < 0 || close(fildes[0]) < 0 ||
+            close(fildes[1]) < 0) {
+          perror("Error piping.\n");
+          exit(EXIT_FAILURE);
+        }
+
+        /* execute middle command */
+        pos = get_command_pos(i);
+        if (execvp(nargv[pos], nargv + pos) == -1) {
+          fprintf(stderr, "%s: Command not found.\n", nargv[pos]);
+          exit(EXIT_FAILURE);
+        }
+        exit(EXIT_SUCCESS);
+      } else {
+        break;
+      }
+    }
+    /* eldest */
+    /* replace eldest stdin */
+    if (command_count > 1) {
+      if (dup2(fildes[0], STDIN_FILENO) < 0 || close(fildes[0]) < 0 ||
+          close(fildes[1]) < 0) {
+        perror("Error piping.\n");
+        exit(EXIT_FAILURE);
+      }
+    }
+
+    /* replace eldest stdout (to a file) */
+    /* output redirection */
+    if (redir_out_target != NULL) {
+      /* fail if file already exists */
+      int wrflags = O_WRONLY | O_CREAT | O_EXCL;
+      /* 0644 = -rw-r--r-- */
+      int perms = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+      int fd = open(redir_out_target, wrflags, perms);
+      if (fd < 0) {
+        fprintf(stderr, "%s: File exists.\n", redir_out_target);
+        close(fd);
+        return;
+      } else if (dup2(fd, STDOUT_FILENO) < 0 || close(fd) < 0) {
+        fprintf(stderr, "%s: Error redirecting output.\n", redir_out_target);
+        exit(EXIT_FAILURE);
+      }
+    }
+
+    /* execute eldest command */
+    pos = get_command_pos(command_count);
+    if (execvp(nargv[pos], nargv + pos) == -1) {
+      fprintf(stderr, "%s: Command not found.\n", nargv[pos]);
+      exit(EXIT_FAILURE);
+    }
+
+    exit(EXIT_SUCCESS);
+  }
+
+  while (wait(NULL) != eldestpid) {
+    /* no-op */
+  }
+  // cleanup pipes
+  for (int i = 0; i < 2*pipe_count;i++) {
+    // ignore errors here, there will be lots...
+    close(fildes[i]);
+  }
 }
 
 /*
@@ -230,7 +333,10 @@ int get_command_pos(int command_num) {
  */
 void catch_term(int signum) { state.complete = 1; }
 
-int check_shell_error() {
+/*
+ * Determines if there is a syntax error.
+ */
+int syntax_error() {
   /* early termination/syntax error cases */
   if (state.syntax_in_redirect) {
     fprintf(stderr, "Ambiguous input redirection.\n");
@@ -290,7 +396,7 @@ int main(void) {
     parse();
 
     /* check syntax errors */
-    if (check_shell_error()) {
+    if (syntax_error()) {
       continue;
     }
 
@@ -299,40 +405,15 @@ int main(void) {
       cd();
     } else if (state.call_lsf) {
       lsF();
+    } else if (state.call_cmd) {
+      command();
     }
-    /* do some kind of forking */
-    else if (state.call_cmd) {
-      pid_t childpid;
-      int fildes[2];
-      int in;
-      int current_command = command_count - 1;
-
-      pipe(fildes);
-      childpid = fork();
-      if (childpid == -1) {
-        /* parent */
-        fprintf(stderr, "%s: Cannot fork child.\n", nargv[0]);
-        exit(EXIT_FAILURE);
-      } else if (childpid == 0) {
-        while (current_command > 1) {
-          pid_t pid = fork();
-        }
-      } else {
-        if (state.bg) {
-          printf("%s [%d]\n", nargv[0], childpid);
-        } else {
-          while (wait(NULL) != childpid) {
-            /* no-op */
-          }
-        }
-      }
-    }
-
-    /* terminate any children that are still running under the same pgrp */
-    killpg(getpgrp(), SIGTERM);
-    printf("p2 terminated.\n");
-    return EXIT_SUCCESS;
   }
+
+  /* terminate any children that are still running under the same pgrp */
+  killpg(getpgrp(), SIGTERM);
+  printf("p2 terminated.\n");
+  return EXIT_SUCCESS;
 }
 
 /*
@@ -413,6 +494,7 @@ void parse() {
         state.pipe = 1;
         nargc++;
         command_count++;
+        pipe_count++;
       } else if (firstrun) {
         if (strcmp(current_buffer, "cd") == 0)
           state.call_cd = 1;
