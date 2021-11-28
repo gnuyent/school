@@ -33,9 +33,10 @@ struct {
    * Program execution flags. In each shell prompt, this can be at most ONE 1
    * value.
    */
-  unsigned int call_cd : 1;  /* run built-in cd */
-  unsigned int call_lsf : 1; /* run built-in ls-F */
-  unsigned int call_cmd : 1; /* run regular command (fork) */
+  unsigned int call_cd : 1;   /* run built-in cd */
+  unsigned int call_lsf : 1;  /* run built-in ls-F */
+  unsigned int call_cmd : 1;  /* run regular command (fork) */
+  unsigned int call_exec : 1; /* run exec */
 
   /*
    * Extra behavior flags. There can be any combination of the following flags.
@@ -210,26 +211,75 @@ int lsF() {
   return 0;
 }
 
-int get_command_pos(int command_num) {
-  if (command_num > 0) {
-    int curr_command = 1;
-    for (int i = 0; i < nargc; i++) {
-      if (curr_command == command_num) {
-        return i;
-      }
-      if (nargv[i] == NULL) {
-        curr_command++;
+int get_args(int pipes) {
+  int counter = 0;
+  int loc = 0;
+  while (counter != pipes) {
+    if (nargv[loc] == NULL) {
+      counter++;
+    }
+    loc++;
+  }
+
+  return loc;
+}
+
+void command() {
+  int original_stdin = dup(STDIN_FILENO), original_stdout = dup(STDOUT_FILENO);
+  int fd[2 * pipe_count];
+  pid_t pid;
+  int pipeloc;
+
+  pid = fork();
+  if (pid == -1) {
+    perror("fork(2) error");
+    exit(EXIT_FAILURE);
+  } else if (pid == 0) {
+    /* spawn children */
+    while (pid == 0 && pipe_count > 0) {
+      int pipeloc = (pipe_count - 1) * 2;
+      pipe(fd + pipeloc);
+      pid = fork();
+      if (pid == 0) {
+        pipe_count--;
       }
     }
+    if (pipe_count > 0) {
+      if (dup2(fd[pipeloc - 2], STDIN_FILENO) < 0) {
+        exit(EXIT_FAILURE);
+      }
+    }
+    if (pipe_count < command_count - 1) {
+      if (dup2(fd[pipeloc + 1], STDOUT_FILENO) < 0 || close(fd[pipeloc]) < 0 ||
+          close(fd[pipeloc]) < 0) {
+        exit(EXIT_FAILURE);
+      }
+    }
+    int pos = get_args(pipe_count);
+    printf("%s (%d), ppid: %d\n", nargv[pos], getpid(), getppid());
+    if (execvp(nargv[pos], nargv + pos) == -1) {
+      fprintf(stderr, "%s: Command not found.\n", nargv[pos]);
+      exit(EXIT_FAILURE);
+    }
   }
-  return -1;
+
+  /* restore stdin/stdout */
+  if (dup2(original_stdin, STDIN_FILENO) < 0 || close(original_stdin) < 0 ||
+      dup2(original_stdout, STDOUT_FILENO) < 0 || close(original_stdout) < 0) {
+    exit(EXIT_FAILURE);
+  }
+
+  printf("shell (%d), ppid: %d, waiting for %s (%d)\n", getpid(), getppid(),
+         nargv[get_args(pipe_count)], pid);
+  while (wait(NULL) != pid) {
+  }
 }
 
 /*
  * Command runner for user-specified arguments. Handles piping, backgrounding,
  * redirection, and waiting automatically.
  */
-void command() {
+void command2() {
   pid_t eldestpid, nextpid;
   int fildes_size = 2 * pipe_count;
   int fildes[fildes_size];
@@ -291,12 +341,11 @@ void command() {
         }
 
         /* execute middle command */
-        pos = get_command_pos(i);
+        pos = get_args(i);
         if (execvp(nargv[pos], nargv + pos) == -1) {
           fprintf(stderr, "%s: Command not found.\n", nargv[pos]);
           exit(EXIT_FAILURE);
         }
-        exit(EXIT_SUCCESS);
       } else {
         close(fildes[1]);
         break;
@@ -335,13 +384,11 @@ void command() {
     }
 
     /* execute eldest command */
-    pos = get_command_pos(command_count);
+    pos = get_args(command_count);
     if (execvp(nargv[pos], nargv + pos) == -1) {
       fprintf(stderr, "%s: Command not found.\n", nargv[pos]);
       exit(EXIT_FAILURE);
     }
-
-    exit(EXIT_SUCCESS);
   }
   if (dup2(original_stdin, STDIN_FILENO) < 0 || close(original_stdin) < 0) {
     perror("Unable to recover stdin.\n");
@@ -382,6 +429,8 @@ int syntax_error() {
     fprintf(stderr, "Invalid output redirection target.\n");
   } else if (state.redir_in && state.call_cmd == 0) {
     fprintf(stderr, "Invalid command supplied for input redirection.\n");
+  } else if (state.call_exec && nargc < 2) {
+    fprintf(stderr, "exec: Invalid arguments.\n");
   } else if (state.redir_out && state.call_cmd == 0) {
     fprintf(stderr, "Invalid command supplied for output redirection.\n");
     // } else if (state.pipe && pargc == 0) {
@@ -437,6 +486,8 @@ int main(void) {
       cd();
     } else if (state.call_lsf) {
       lsF();
+    } else if (state.call_exec) {
+      execvp(nargv[1], nargv + 1);
     } else if (state.call_cmd) {
       command();
     }
@@ -532,6 +583,8 @@ void parse() {
           state.call_cd = 1;
         else if (strcmp(current_buffer, "ls-F") == 0)
           state.call_lsf = 1;
+        else if (strcmp(current_buffer, "exec") == 0)
+          state.call_exec = 1;
         else
           state.call_cmd = 1;
 
