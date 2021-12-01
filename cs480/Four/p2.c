@@ -41,11 +41,12 @@ struct {
   /*
    * Extra behavior flags. There can be any combination of the following flags.
    */
-  unsigned int bg : 1;              /* background command */
-  unsigned int redir_out : 1;       /* redirect stdout */
-  unsigned int redir_out_force : 1; /* overwrite output file */
-  unsigned int redir_in : 1;        /* redirect stdin */
-  unsigned int pipe : 1;            /* pipe command output */
+  unsigned int bg : 1;                   /* background command */
+  unsigned int redir_out : 1;            /* redirect stdout */
+  unsigned int redir_out_force : 1;      /* overwrite output file */
+  unsigned int redir_in : 1;             /* redirect stdin */
+  unsigned int pipe : 1;                 /* pipe command output */
+  unsigned int pipe_looking_for_rhs : 1; /* waiting for rhs of pipe */
 } state;
 
 /*
@@ -165,49 +166,50 @@ int lsF() {
     }
   }
 
-    // If filename cannot be accessed or cannot malloc(3) enough memory.
-    if (dirp == NULL) {
-      fprintf(stderr, "%s unreadable.\n", nargv[1]);
-      return -1;
-    }
+  // If filename cannot be accessed or cannot malloc(3) enough memory.
+  if (dirp == NULL) {
+    fprintf(stderr, "%s unreadable.\n", nargv[1]);
+    return -1;
+  }
 
-    for (;;) {
-      // Continue looping through files as long as a pointer exists
-      if ((dp = readdir(dirp)) != NULL) {
-        snprintf(path, sizeof(path), "%s/%s", start_loc, dp->d_name);
-        fstatus = lstat(path, &sb);
+  for (;;) {
+    // Continue looping through files as long as a pointer exists
+    if ((dp = readdir(dirp)) != NULL) {
+      snprintf(path, sizeof(path), "%s/%s", start_loc, dp->d_name);
+      fstatus = lstat(path, &sb);
+      if (fstatus != 0) {
+        // could not read file
+        printf("%s\n", dp->d_name);
+      } else if (S_ISDIR(sb.st_mode)) {
+        printf("%s/\n", dp->d_name);
+      } else if (S_ISLNK(sb.st_mode)) {
+        fstatus = stat(path, &sb);
         if (fstatus != 0) {
-          // could not read file
-          printf("%s\n", dp->d_name);
-        } else if (S_ISDIR(sb.st_mode)) {
-          printf("%s/\n", dp->d_name);
-        } else if (S_ISLNK(sb.st_mode)) {
-          fstatus = stat(path, &sb);
-          if (fstatus != 0) {
-            // broken link
-            printf("%s&\n", dp->d_name);
-          } else {
-            // valid link
-            printf("%s@\n", dp->d_name);
-          }
-        } else if (S_ISREG(sb.st_mode)) {
-          if (sb.st_mode & S_IXUSR || sb.st_mode & S_IXGRP ||
-              sb.st_mode & S_IXOTH) {
-            printf("%s*\n", dp->d_name);
-          } else {
-            printf("%s\n", dp->d_name);
-          }
+          // broken link
+          printf("%s&\n", dp->d_name);
+        } else {
+          // valid link
+          printf("%s@\n", dp->d_name);
         }
-      } else {
-        closedir(dirp);
-        break;
+      } else if (S_ISREG(sb.st_mode)) {
+        if (sb.st_mode & S_IXUSR || sb.st_mode & S_IXGRP ||
+            sb.st_mode & S_IXOTH) {
+          printf("%s*\n", dp->d_name);
+        } else {
+          printf("%s\n", dp->d_name);
+        }
       }
+    } else {
+      closedir(dirp);
+      break;
     }
+  }
 
   return 0;
 }
 
-/* Retrieves the command index in nargv from a given command number (0-indexed) */
+/* Retrieves the command index in nargv from a given command number (0-indexed)
+ */
 int get_cmd_idx(int command_num) {
   int null_count = 0;
   int idx = 0;
@@ -221,7 +223,8 @@ int get_cmd_idx(int command_num) {
   return idx;
 }
 
-/* Command handler. Handles piping, backgrounding, and input/output redirection. */
+/* Command handler. Handles piping, backgrounding, and input/output redirection.
+ */
 void command() {
   int original_stdin = dup(STDIN_FILENO), original_stdout = dup(STDOUT_FILENO);
   int command_count = pipe_count;
@@ -240,6 +243,7 @@ void command() {
         /* replace stdout with pipe */
         if (dup2(fd[1], STDOUT_FILENO) < 0 || close(fd[0]) < 0 ||
             close(fd[1]) < 0) {
+          perror("Error closing pipe.");
           exit(EXIT_FAILURE);
         }
       } else { /* rightmost command, fd is empty */
@@ -273,6 +277,7 @@ void command() {
     if (command_count >= 0) { /* middle/rightmost command */
       if (dup2(fd[0], STDIN_FILENO) < 0 || close(fd[0]) < 0 ||
           close(fd[1]) < 0) {
+        perror("Error closing pipe.");
         exit(EXIT_FAILURE);
       }
     } else { /* leftmost command */
@@ -283,6 +288,7 @@ void command() {
           fprintf(stderr, "%s: No such file or directory.\n", redir_in_target);
           exit(EXIT_FAILURE);
         } else if (dup2(fd, STDIN_FILENO) < 0 || close(fd) < 0) {
+          perror("Error closing input redirect target.");
           exit(EXIT_FAILURE);
         }
       }
@@ -298,6 +304,7 @@ void command() {
   /* restore stdin/stdout */
   if (dup2(original_stdin, STDIN_FILENO) < 0 || close(original_stdin) < 0 ||
       dup2(original_stdout, STDOUT_FILENO) < 0 || close(original_stdout) < 0) {
+    perror("Error recovering stdin/stdout.");
     exit(EXIT_FAILURE);
   }
 
@@ -338,9 +345,8 @@ int syntax_error() {
     fprintf(stderr, "exec: Invalid arguments.\n");
   } else if (state.redir_out && state.call_cmd == 0) {
     fprintf(stderr, "Invalid command supplied for output redirection.\n");
-    // } else if (state.pipe && pargc == 0) {
-    //   fprintf(stderr, "No command for piping specified.\n");
-    //   continue;
+  } else if (state.pipe_looking_for_rhs) {
+    fprintf(stderr, "No command for piping specified.\n");
   } else if (state.is_empty_newline) {
   } else {
     return 0;
@@ -440,14 +446,16 @@ void parse() {
     } else if (word_width > 0) {
       if (state.redir_in && redir_in_target == NULL) {
         /* save the next word as input redirection target */
-        if (strcmp(current_buffer, "&") == 0)
+        if (strcmp(current_buffer, "&") == 0 || strcmp(current_buffer, ">") == 0 ||
+        strcmp(current_buffer, ">!") == 0 || strcmp(current_buffer, "<") == 0)
           state.syntax_invalid_redir_target = 1;
         else
           redir_in_target = current_buffer;
       } else if ((state.redir_out || state.redir_out_force) &&
                  redir_out_target == NULL) {
         /* save the next word as output redirection target */
-        if (strcmp(current_buffer, "&") == 0)
+        if (strcmp(current_buffer, "&") == 0 || strcmp(current_buffer, ">") == 0 ||
+        strcmp(current_buffer, ">!") == 0 || strcmp(current_buffer, "<") == 0)
           state.syntax_invalid_redir_target = 1;
         else
           redir_out_target = current_buffer;
@@ -457,29 +465,33 @@ void parse() {
         break;
       } else if (strcmp(current_buffer, ">") == 0) {
         /* don't handle multiple output redirects, return a syntax error */
-        if (state.redir_out || state.redir_out_force)
+        if (state.redir_out || state.redir_out_force) {
           state.syntax_out_redirect = 1;
-        else
+        } else {
           state.redir_out = 1;
+        }
         continue;
       } else if (strcmp(current_buffer, ">!") == 0) {
         /* don't handle multiple output redirects, return a syntax error */
-        if (state.redir_out_force || state.redir_out)
+        if (state.redir_out_force || state.redir_out) {
           state.syntax_out_redirect = 1;
-        else
+        } else {
           state.redir_out_force = 1;
+        }
         continue;
       } else if (strcmp(current_buffer, "<") == 0) {
         /* don't handle multiple input redirects, return a syntax error */
-        if (state.redir_in)
+        if (state.redir_in) {
           state.syntax_in_redirect = 1;
-        else
+        } else {
           state.redir_in = 1;
+        }
         continue;
       } else if (strcmp(current_buffer, "|") == 0) {
         state.pipe = 1;
         nargc++;
         pipe_count++;
+        state.pipe_looking_for_rhs = 1;
       } else if (firstrun) {
         if (strcmp(current_buffer, "cd") == 0)
           state.call_cd = 1;
@@ -500,6 +512,7 @@ void parse() {
         if (state.call_lsf && !state.pipe) {
           lsFargs++;
         }
+        state.pipe_looking_for_rhs = 0;
       }
     }
 
