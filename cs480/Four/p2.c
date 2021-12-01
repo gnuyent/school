@@ -135,36 +135,35 @@ int lsF() {
   struct dirent *dp;
   struct stat sb;
   int fstatus;
-  char folder[STORAGE];
+  char *start_loc;
+  char path[STORAGE];
   int i;
 
-  for (i = 0; i < nargc; i++) {
-    if (nargv[i] == NULL) {
-      break;
-    } else if (lsFargs == 0) {
-      dirp = opendir(".");
-      // Retrieve current absolute directory for fancy ls symbols
-      // getcwd(folder, STORAGE);
-      // dirp = opendir(folder);
+  if (lsFargs == 0) {
+    dirp = opendir(".");
+    start_loc = ".";
+    // Retrieve current absolute directory for fancy ls symbols
+    // getcwd(folder, STORAGE);
+    // dirp = opendir(folder);
+  } else {
+    fstatus = stat(nargv[1], &sb);
+    // The given file/folder name does not exist (or another error was
+    // raised).
+    if (fstatus == -1) {
+      fprintf(stderr, "%s: No such file or directory.\n", nargv[1]);
+      return -1;
     } else {
-      fstatus = stat(nargv[1], &sb);
-      // The given file/folder name does not exist (or another error was
-      // raised).
-      if (fstatus == -1) {
-        fprintf(stderr, "%s: No such file or directory.\n", nargv[1]);
-        return -1;
+      // Determine if the given filename is a directory or not
+      // https://stackoverflow.com/a/3828537
+      if (S_ISDIR(sb.st_mode)) {
+        dirp = opendir(nargv[1]);
+        start_loc = nargv[1];
       } else {
-        // Determine if the given filename is a directory or not
-        // https://stackoverflow.com/a/3828537
-        if (S_ISDIR(sb.st_mode)) {
-          dirp = opendir(nargv[1]);
-        } else {
-          // Parrot back the filename
-          printf("%s\n", nargv[1]);
-          continue;
-        }
+        // Parrot back the filename
+        printf("%s\n", nargv[1]);
       }
     }
+  }
 
     // If filename cannot be accessed or cannot malloc(3) enough memory.
     if (dirp == NULL) {
@@ -175,17 +174,15 @@ int lsF() {
     for (;;) {
       // Continue looping through files as long as a pointer exists
       if ((dp = readdir(dirp)) != NULL) {
-        // char filename[1024];
-        // snprintf(filename, 1024, "%s/%s", nargv[1], dp->d_name);
-        // fstatus = lstat(filename, &sb);
-        fstatus = lstat(dp->d_name, &sb);
+        snprintf(path, sizeof(path), "%s/%s", start_loc, dp->d_name);
+        fstatus = lstat(path, &sb);
         if (fstatus != 0) {
           // could not read file
           printf("%s\n", dp->d_name);
         } else if (S_ISDIR(sb.st_mode)) {
           printf("%s/\n", dp->d_name);
         } else if (S_ISLNK(sb.st_mode)) {
-          fstatus = stat(dp->d_name, &sb);
+          fstatus = stat(path, &sb);
           if (fstatus != 0) {
             // broken link
             printf("%s&\n", dp->d_name);
@@ -206,11 +203,11 @@ int lsF() {
         break;
       }
     }
-  }
 
   return 0;
 }
 
+/* Retrieves the command index in nargv from a given command number (0-indexed) */
 int get_cmd_idx(int command_num) {
   int null_count = 0;
   int idx = 0;
@@ -224,6 +221,7 @@ int get_cmd_idx(int command_num) {
   return idx;
 }
 
+/* Command handler. Handles piping, backgrounding, and input/output redirection. */
 void command() {
   int original_stdin = dup(STDIN_FILENO), original_stdout = dup(STDOUT_FILENO);
   int command_count = pipe_count;
@@ -253,7 +251,7 @@ void command() {
           int perms = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
           int fd = open(redir_out_target, wrflags, perms);
           if (fd < 0) {
-            fprintf(stderr, "%s: File exists.\n", redir_out_target);
+            fprintf(stderr, "%s: File or folder exists.\n", redir_out_target);
             close(fd);
             exit(EXIT_FAILURE);
           } else if (dup2(fd, STDOUT_FILENO) < 0 || close(fd) < 0) {
