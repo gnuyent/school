@@ -143,9 +143,6 @@ int lsF() {
   if (lsFargs == 0) {
     dirp = opendir(".");
     start_loc = ".";
-    // Retrieve current absolute directory for fancy ls symbols
-    // getcwd(folder, STORAGE);
-    // dirp = opendir(folder);
   } else {
     fstatus = stat(nargv[1], &sb);
     // The given file/folder name does not exist (or another error was
@@ -250,7 +247,10 @@ void command() {
         /* output redirection */
         if (redir_out_target != NULL) {
           /* fail if file already exists */
-          int wrflags = O_WRONLY | O_CREAT | O_EXCL;
+          int wrflags = O_WRONLY | O_CREAT;
+          if (state.redir_out) {
+            wrflags = wrflags | O_EXCL;
+          }
           /* 0644 = -rw-r--r-- */
           int perms = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
           int fd = open(redir_out_target, wrflags, perms);
@@ -295,7 +295,10 @@ void command() {
     }
 
     int pos = get_cmd_idx(command_count);
-    if (execvp(nargv[pos], nargv + pos) == -1) {
+    if (strcmp(nargv[pos], "ls-F") == 0) {
+      lsF();
+      exit(EXIT_SUCCESS);
+    } else if (execvp(nargv[pos], nargv + pos) == -1) {
       fprintf(stderr, "%s: Command not found.\n", nargv[pos]);
       exit(EXIT_FAILURE);
     }
@@ -394,13 +397,11 @@ int main(void) {
     /* built-ins or fork */
     if (state.call_cd) {
       cd();
-    } else if (state.call_lsf) {
-      lsF();
     } else if (state.call_exec) {
       fflush(stdout);
       fflush(stderr);
       execvp(nargv[1], nargv + 1);
-    } else if (state.call_cmd) {
+    } else if (state.call_cmd || state.call_lsf) {
       command();
     }
   }
@@ -501,9 +502,10 @@ void parse() {
       } else if (firstrun) {
         if (strcmp(current_buffer, "cd") == 0)
           state.call_cd = 1;
-        else if (strcmp(current_buffer, "ls-F") == 0)
+        else if (strcmp(current_buffer, "ls-F") == 0) {
           state.call_lsf = 1;
-        else if (strcmp(current_buffer, "exec") == 0)
+          state.call_cmd = 1;
+        } else if (strcmp(current_buffer, "exec") == 0)
           state.call_exec = 1;
         else
           state.call_cmd = 1;
@@ -515,7 +517,8 @@ void parse() {
         /* add arguments to nargv */
         nargv[nargc] = current_buffer;
         nargc++;
-        if (state.call_lsf && !state.pipe) {
+        // if (state.call_lsf && !state.pipe) {
+        if (state.call_lsf) {
           lsFargs++;
         }
         state.pipe_looking_for_rhs = 0;
