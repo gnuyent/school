@@ -91,7 +91,6 @@ char *redir_out_target = NULL;
 /* Input file for redirection (<). Only read when state.redir_in is 1. */
 char *redir_in_target = NULL;
 
-int command_count;
 int pipe_count;
 int lsFargs = 0;
 
@@ -212,47 +211,86 @@ int lsF() {
   return 0;
 }
 
-int get_args(int pipes) {
-  int counter = 0;
-  int loc = 0;
-  while (counter != pipes) {
-    if (nargv[loc] == NULL) {
-      counter++;
+int get_cmd_idx(int command_num) {
+  int null_count = 0;
+  int idx = 0;
+  while (null_count != command_num + 1) {
+    if (nargv[idx] == NULL) {
+      null_count++;
     }
-    loc++;
+    idx++;
   }
 
-  return loc;
+  return idx;
 }
 
 void command() {
   int original_stdin = dup(STDIN_FILENO), original_stdout = dup(STDOUT_FILENO);
-  pid_t pid, eldest;
+  int command_count = pipe_count;
+  pid_t pid;
 
-  pid = 0;
-  eldest = fork();
-  if (eldest == -1) {
+  fflush(stdout);
+
+  if ((pid = fork()) == -1) {
     perror("fork(2) error");
     exit(EXIT_FAILURE);
-  } else if (eldest == 0) {
+  } else if (pid == 0) {
     /* spawn children */
     int fd[2];
-    if (pipe_count > 0) {
-      pipe(fd);
-      while (pid == 0 && pipe_count > 0) {
+    while (pid == 0 && command_count >= 0) {
+      if (command_count != pipe_count) { /* leftmost/middle command */
+        /* replace stdout with pipe */
         if (dup2(fd[1], STDOUT_FILENO) < 0 || close(fd[0]) < 0 ||
             close(fd[1]) < 0) {
           exit(EXIT_FAILURE);
         }
-        pipe(fd);
+      } else { /* rightmost command, fd is empty */
+        /* output redirection */
+        if (redir_out_target != NULL) {
+          /* fail if file already exists */
+          int wrflags = O_WRONLY | O_CREAT | O_EXCL;
+          /* 0644 = -rw-r--r-- */
+          int perms = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+          int fd = open(redir_out_target, wrflags, perms);
+          if (fd < 0) {
+            fprintf(stderr, "%s: File exists.\n", redir_out_target);
+            close(fd);
+            exit(EXIT_FAILURE);
+          } else if (dup2(fd, STDOUT_FILENO) < 0 || close(fd) < 0) {
+            fprintf(stderr, "%s: Error redirecting output.\n",
+                    redir_out_target);
+            exit(EXIT_FAILURE);
+          }
+        }
+      }
+
+      command_count--;
+
+      if (command_count >= 0) {
+        pipe(fd); // create pipe for children
         pid = fork();
-        if (pid == 0) {
-          pipe_count--;
+      }
+    }
+
+    if (command_count >= 0) { /* middle/rightmost command */
+      if (dup2(fd[0], STDIN_FILENO) < 0 || close(fd[0]) < 0 ||
+          close(fd[1]) < 0) {
+        exit(EXIT_FAILURE);
+      }
+    } else { /* leftmost command */
+      /* input redirection */
+      if (redir_in_target != NULL) {
+        int fd = open(redir_in_target, O_RDONLY);
+        if (fd < 0) {
+          fprintf(stderr, "%s: No such file or directory.\n", redir_in_target);
+          exit(EXIT_FAILURE);
+        } else if (dup2(fd, STDIN_FILENO) < 0 || close(fd) < 0) {
+          exit(EXIT_FAILURE);
         }
       }
     }
-    int pos = get_args(pipe_count);
-    // printf("%s (%d), ppid: %d\n", nargv[pos], getpid(), getppid());
+
+    int pos = get_cmd_idx(command_count);
     if (execvp(nargv[pos], nargv + pos) == -1) {
       fprintf(stderr, "%s: Command not found.\n", nargv[pos]);
       exit(EXIT_FAILURE);
@@ -265,9 +303,12 @@ void command() {
     exit(EXIT_FAILURE);
   }
 
-  printf("shell (%d), ppid: %d, waiting for %s (%d)\n", getpid(), getppid(),
-         nargv[get_args(pipe_count)], eldest);
-  while (wait(NULL) != eldest) {
+  if (state.bg) {
+    printf("%s [%d]\n", nargv[get_cmd_idx(pipe_count - 1)], pid);
+  } else {
+    while (wait(NULL) != pid) {
+      /* no-op */
+    }
   }
 }
 
@@ -331,7 +372,6 @@ int main(void) {
 
     /* reset variables */
     nargc = 0;
-    command_count = 0;
     pipe_count = 0;
     lsFargs = 0;
     redir_in_target = NULL;
@@ -439,10 +479,8 @@ void parse() {
           state.redir_in = 1;
         continue;
       } else if (strcmp(current_buffer, "|") == 0) {
-        /* don't handle multiple pipes, return a syntax error */
         state.pipe = 1;
         nargc++;
-        command_count++;
         pipe_count++;
       } else if (firstrun) {
         if (strcmp(current_buffer, "cd") == 0)
@@ -456,7 +494,6 @@ void parse() {
 
         nargv[nargc] = current_buffer;
         nargc++;
-        command_count++;
         firstrun = 0;
       } else {
         /* add arguments to nargv */
