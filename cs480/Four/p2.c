@@ -137,8 +137,9 @@ int lsF() {
   struct stat sb;
   int fstatus;
   char folder[STORAGE];
+  int i;
 
-  for (int i = 0; i < nargc; i++) {
+  for (i = 0; i < nargc; i++) {
     if (nargv[i] == NULL) {
       break;
     } else if (lsFargs == 0) {
@@ -226,37 +227,32 @@ int get_args(int pipes) {
 
 void command() {
   int original_stdin = dup(STDIN_FILENO), original_stdout = dup(STDOUT_FILENO);
-  int fd[2 * pipe_count];
-  pid_t pid;
-  int pipeloc;
+  pid_t pid, eldest;
 
-  pid = fork();
-  if (pid == -1) {
+  pid = 0;
+  eldest = fork();
+  if (eldest == -1) {
     perror("fork(2) error");
     exit(EXIT_FAILURE);
-  } else if (pid == 0) {
+  } else if (eldest == 0) {
     /* spawn children */
-    while (pid == 0 && pipe_count > 0) {
-      int pipeloc = (pipe_count - 1) * 2;
-      pipe(fd + pipeloc);
-      pid = fork();
-      if (pid == 0) {
-        pipe_count--;
-      }
-    }
+    int fd[2];
     if (pipe_count > 0) {
-      if (dup2(fd[pipeloc - 2], STDIN_FILENO) < 0) {
-        exit(EXIT_FAILURE);
-      }
-    }
-    if (pipe_count < command_count - 1) {
-      if (dup2(fd[pipeloc + 1], STDOUT_FILENO) < 0 || close(fd[pipeloc]) < 0 ||
-          close(fd[pipeloc]) < 0) {
-        exit(EXIT_FAILURE);
+      pipe(fd);
+      while (pid == 0 && pipe_count > 0) {
+        if (dup2(fd[1], STDOUT_FILENO) < 0 || close(fd[0]) < 0 ||
+            close(fd[1]) < 0) {
+          exit(EXIT_FAILURE);
+        }
+        pipe(fd);
+        pid = fork();
+        if (pid == 0) {
+          pipe_count--;
+        }
       }
     }
     int pos = get_args(pipe_count);
-    printf("%s (%d), ppid: %d\n", nargv[pos], getpid(), getppid());
+    // printf("%s (%d), ppid: %d\n", nargv[pos], getpid(), getppid());
     if (execvp(nargv[pos], nargv + pos) == -1) {
       fprintf(stderr, "%s: Command not found.\n", nargv[pos]);
       exit(EXIT_FAILURE);
@@ -270,138 +266,8 @@ void command() {
   }
 
   printf("shell (%d), ppid: %d, waiting for %s (%d)\n", getpid(), getppid(),
-         nargv[get_args(pipe_count)], pid);
-  while (wait(NULL) != pid) {
-  }
-}
-
-/*
- * Command runner for user-specified arguments. Handles piping, backgrounding,
- * redirection, and waiting automatically.
- */
-void command2() {
-  pid_t eldestpid, nextpid;
-  int fildes_size = 2 * pipe_count;
-  int fildes[fildes_size];
-  int pos, pidx;
-  int original_stdin = dup(STDIN_FILENO);
-  int original_stdout = dup(STDOUT_FILENO);
-
-  eldestpid = fork();
-  if (eldestpid == -1) {
-    perror("Error forking.\n");
-    exit(EXIT_FAILURE);
-  } else if (eldestpid == 0) {
-    if (command_count > 1) {
-      pipe(fildes + fildes_size - 2); // last pipe
-    }
-    for (int i = command_count - 1; i > 0; i--) {
-      if (i > 1) {
-        pidx = 2 * (i - 2);  // idx of read pipe before current command
-        pipe(fildes + pidx); // pipe before current command
-      }
-      nextpid = fork();
-      if (nextpid == -1) {
-        perror("Error forking.\n");
-        exit(EXIT_FAILURE);
-      } else if (nextpid == 0) {
-        /* FIRST command */
-        if (i == 1) {
-          /* replace stdin with file */
-          int fd = (redir_in_target == NULL) ? open("/dev/null", O_RDONLY)
-                                             : open(redir_in_target, O_RDONLY);
-          if (fd < 0) {
-            fprintf(stderr, "%s: No such file or directory.\n",
-                    redir_in_target);
-            return;
-          } else if (dup2(fd, STDIN_FILENO) < 0 || close(fd) < 0) {
-            fprintf(stderr, "%s: Error redirecting input.\n", redir_in_target);
-            exit(EXIT_FAILURE);
-          }
-          /* replace stdout to right command's input */
-          if (dup2(fildes[1], STDOUT_FILENO) < 0 || close(fildes[1]) < 0) {
-            perror("Error piping.\n");
-            exit(EXIT_FAILURE);
-          }
-          /* MIDDLE command */
-        } else {
-          /* replace middle stdin to left command's output */
-          if (dup2(fildes[pidx], STDIN_FILENO) < 0 || close(fildes[pidx]) < 0 ||
-              /* replace middle stdout to right command's input */
-              dup2(fildes[pidx + 3], STDOUT_FILENO) < 0 ||
-              close(fildes[pidx + 3]) < 0) {
-            perror("Error piping.\n");
-            exit(EXIT_FAILURE);
-          }
-        }
-
-        // cleanup pipes
-        for (int i = 0; i < fildes_size; i++) {
-          close(fildes[i]);
-        }
-
-        /* execute middle command */
-        pos = get_args(i);
-        if (execvp(nargv[pos], nargv + pos) == -1) {
-          fprintf(stderr, "%s: Command not found.\n", nargv[pos]);
-          exit(EXIT_FAILURE);
-        }
-      } else {
-        close(fildes[1]);
-        break;
-      }
-    }
-    /* eldest */
-    /* replace eldest stdin */
-    if (command_count > 1) {
-      if (dup2(fildes[fildes_size - 2], STDIN_FILENO) < 0 ||
-          close(fildes[fildes_size - 2]) < 0) {
-        perror("Error piping.\n");
-        exit(EXIT_FAILURE);
-      }
-    }
-
-    /* replace eldest stdout (to a file) */
-    /* output redirection */
-    if (redir_out_target != NULL) {
-      /* fail if file already exists */
-      int wrflags = O_WRONLY | O_CREAT | O_EXCL;
-      /* 0644 = -rw-r--r-- */
-      int perms = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
-      int fd = open(redir_out_target, wrflags, perms);
-      if (fd < 0) {
-        fprintf(stderr, "%s: File exists.\n", redir_out_target);
-        close(fd);
-        return;
-      } else if (dup2(fd, STDOUT_FILENO) < 0 || close(fd) < 0) {
-        fprintf(stderr, "%s: Error redirecting output.\n", redir_out_target);
-        exit(EXIT_FAILURE);
-      }
-    }
-    // cleanup pipes
-    for (int i = 0; i < fildes_size; i++) {
-      close(fildes[i]);
-    }
-
-    /* execute eldest command */
-    pos = get_args(command_count);
-    if (execvp(nargv[pos], nargv + pos) == -1) {
-      fprintf(stderr, "%s: Command not found.\n", nargv[pos]);
-      exit(EXIT_FAILURE);
-    }
-  }
-  if (dup2(original_stdin, STDIN_FILENO) < 0 || close(original_stdin) < 0) {
-    perror("Unable to recover stdin.\n");
-    exit(EXIT_FAILURE);
-  }
-
-  if (dup2(original_stdout, STDOUT_FILENO) < 0 || close(original_stdout) < 0) {
-    perror("Unable to recover stdout.\n");
-    exit(EXIT_FAILURE);
-  }
-
-  while (wait(NULL) != eldestpid) {
-    /* no-op */
+         nargv[get_args(pipe_count)], eldest);
+  while (wait(NULL) != eldest) {
   }
 }
 
