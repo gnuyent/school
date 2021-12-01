@@ -397,6 +397,8 @@ int main(void) {
     } else if (state.call_lsf) {
       lsF();
     } else if (state.call_exec) {
+      fflush(stdout);
+      fflush(stderr);
       execvp(nargv[1], nargv + 1);
     } else if (state.call_cmd) {
       command();
