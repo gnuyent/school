@@ -248,9 +248,7 @@ void command() {
         if (redir_out_target != NULL) {
           /* fail if file already exists */
           int wrflags = O_WRONLY | O_CREAT;
-          if (state.redir_out) {
-            wrflags = wrflags | O_EXCL;
-          }
+          wrflags = (state.redir_out) ? wrflags | O_EXCL : wrflags | O_TRUNC;
           /* 0644 = -rw-r--r-- */
           int perms = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
           int fd = open(redir_out_target, wrflags, perms);
@@ -398,8 +396,6 @@ int main(void) {
     if (state.call_cd) {
       cd();
     } else if (state.call_exec) {
-      fflush(stdout);
-      fflush(stderr);
       execvp(nargv[1], nargv + 1);
     } else if (state.call_cmd || state.call_lsf) {
       command();
