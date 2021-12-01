@@ -446,16 +446,20 @@ void parse() {
     } else if (word_width > 0) {
       if (state.redir_in && redir_in_target == NULL) {
         /* save the next word as input redirection target */
-        if (strcmp(current_buffer, "&") == 0 || strcmp(current_buffer, ">") == 0 ||
-        strcmp(current_buffer, ">!") == 0 || strcmp(current_buffer, "<") == 0)
+        if (strcmp(current_buffer, "&") == 0 ||
+            strcmp(current_buffer, ">") == 0 ||
+            strcmp(current_buffer, ">!") == 0 ||
+            strcmp(current_buffer, "<") == 0)
           state.syntax_invalid_redir_target = 1;
         else
           redir_in_target = current_buffer;
       } else if ((state.redir_out || state.redir_out_force) &&
                  redir_out_target == NULL) {
         /* save the next word as output redirection target */
-        if (strcmp(current_buffer, "&") == 0 || strcmp(current_buffer, ">") == 0 ||
-        strcmp(current_buffer, ">!") == 0 || strcmp(current_buffer, "<") == 0)
+        if (strcmp(current_buffer, "&") == 0 ||
+            strcmp(current_buffer, ">") == 0 ||
+            strcmp(current_buffer, ">!") == 0 ||
+            strcmp(current_buffer, "<") == 0)
           state.syntax_invalid_redir_target = 1;
         else
           redir_out_target = current_buffer;
