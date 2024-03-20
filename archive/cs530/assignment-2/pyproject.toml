@@ -8,7 +8,7 @@ authors = ["Brandon Nguyen <gnuyent@protonmail.com>"]
 python = "^3.9"
 
 [tool.poetry.dev-dependencies]
-black = "^21.10b0"
+black = "^24.3"
 isort = "^5.10.1"
 
 [build-system]
